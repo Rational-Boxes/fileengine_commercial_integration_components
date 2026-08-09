@@ -174,6 +174,32 @@ Endpoints below are the concrete contract (base path per service).
 
 ## 5. Session & authentication
 
+### 5.0 Integration postures (which session profile applies)
+
+The available session profiles are a function of **how deeply the integrator has
+integrated with the FileEngine infrastructure**, specifically whether the two
+systems share a **common user source-of-truth**. This is a deployment decision the
+integrator makes, not something the kit can assume.
+
+- **Posture A — Standalone embed (no shared identity).** The host app has its own,
+  separate user store. FileEngine identities are distinct. → Use **popup OAuth**
+  (§5.1) or **credential passthrough** (§5.3). The user authenticates to FileEngine
+  once (then silent). No infrastructure coupling required; works against any
+  FileEngine instance the host is merely CORS-allowed to reach.
+
+- **Posture B — Infrastructure-level integration (common source-of-truth).** The
+  integrator has extended down to the **identity infrastructure layer**: their
+  application and FileEngine are provisioned from the **same LDAP directory,
+  schema, tenant, and role model** — one authoritative user store. Only in this
+  posture is the **delegated silent session** (§5.2) available, and it is the
+  payoff for that deeper integration: true zero-login SSO with roles that map 1:1
+  because both sides read the same directory.
+
+Posture B is a **stronger prerequisite than "point at the same LDAP host"** — it
+assumes a genuinely shared source-of-truth (shared provisioning, tenanting, and
+role governance), which is an infrastructure commitment. The kit supports both
+postures; §5.1 is the portable default, §5.2 is the tight-integration tier.
+
 ### 5.1 Default profile — popup OAuth, token in browser, direct-to-service
 
 Chosen to keep the host app loaded and match the spec's "CORS allows the host to
@@ -201,18 +227,57 @@ reach the REST APIs" model.
    the configured host origin; `SessionManager` accepts messages only from the
    bridge origin and validates a `state`/nonce created at `login()`.
 
-### 5.2 Alternative profile — trusted-issuer (zero-login SSO)
+### 5.2 Preferred tight-integration profile — delegated silent session (zero-login)
 
 For host apps that want **no** FileEngine login at all (host user ⇒ FileEngine
-session): the bridge holds `FILEENGINE_JWT_SECRET` and **mints the HS256 JWT
-itself** from the host's authenticated session, mapping host-user → FileEngine
-`sub`/`tenant`/`roles`. Most seamless; but the bridge becomes an
-impersonation-capable secret holder and minting is **unaudited** today.
+session, established silently in the background). This profile needs a **new
+upstream FileEngine endpoint** (fully specified in §14) and is the recommended
+path for deep commercial embedding once that lands.
 
-Hardening required before recommending it for production (tracked as work items):
-a dedicated signing identity/kid, short TTLs + refresh only, an `act`/`azp` claim
-marking bridge-minted tokens, and an **audit event** emitted to the core's audit
-stream on every mint. Until then, this profile is "advanced / self-hosted trust."
+Trust model — **do NOT share the global `FILEENGINE_JWT_SECRET`.** That secret can
+forge any token for any user/tenant (incl. `system_admin`) and is unaudited;
+handing it to an integrator's bridge is an unacceptable blast radius. Instead each
+integration gets a **scoped, registered, revocable credential**, and FileEngine —
+not the bridge — does the minting, validation, and auditing.
+
+Handshake (asymmetric assertion, RFC 7523 / RFC 8693 token-exchange shape):
+1. The integration holds a **private key**; FileEngine's registry stores only its
+   **public key** (§14). Nothing forge-capable ever leaves the integration.
+2. On "give me a FileEngine session", the integrator's backend (or our Node
+   bridge, which holds the private key) builds a short-lived **signed assertion**
+   `{ iss: integration_id, sub: <user email/external-id>, tenant, aud:
+   fileengine, iat, exp, jti }` and POSTs it to `POST /v1/auth/exchange`.
+3. FileEngine verifies the assertion signature against the registered public key,
+   checks the integration is enabled and permitted for that tenant, resolves the
+   subject to a **pre-provisioned** LDAP identity (§14 — unknown subject is
+   rejected in v1), and applies the integration's **role cap** and **TTL cap**.
+4. It mints a normal end-user HS256 session JWT with delegation markers
+   `act = { integration_id }`, `azp = integration_id`, `amr = ["delegated"]`, and
+   emits an `auth.delegated_issue` **audit event**. Returns `{ token, expires_in }`.
+5. The embed uses the token as `Authorization: Bearer` exactly like any other
+   profile; refresh via `POST /v1/auth/refresh`.
+
+No browser redirect or popup — the trust is established server-to-server, so the
+host app is never interrupted. Because scope is enforced at mint time, a
+compromised integration cannot cross tenants or escalate to admin, and every
+issuance is attributable in the tamper-evident audit chain.
+
+**Shared directory (Posture B prerequisite, §5.0).** This profile is available
+*only* to integrators who have integrated at the infrastructure layer and share a
+**common user source-of-truth** — the integrating application back-ends to the
+**same LDAP service, schema, tenant, and role model** as FileEngine. That shared
+directory is what makes the handshake clean:
+- The asserted `sub` **is** a FileEngine identity — no external-id mapping table,
+  no JIT provisioning. FileEngine resolves the subject in the shared directory and,
+  if absent, rejects (pre-provisioned model, which is automatic here).
+- **Roles map 1:1.** FileEngine resolves the subject's roles *live from the shared
+  LDAP at mint time* — exactly as a normal password login does — so the token
+  carries the user's real roles and the host app authorizes against the *same*
+  role names. No role translation on either side.
+- The integration's optional **role cap** (§14) is therefore a *least-privilege
+  ceiling* on what the embed surface may receive (which is end-user-only anyway),
+  never a role remapping — e.g. an integration can be configured to never obtain
+  admin-scoped tokens even for a subject who genuinely holds an admin role.
 
 ### 5.3 Alternative profile — credential passthrough
 
@@ -244,7 +309,9 @@ Minimal, single-purpose, MIT.
 ### 6.1 Responsibilities
 - Serve the OAuth **login start** + **callback** (`postMessage`) pages.
 - **Refresh** relay (`POST /v1/auth/refresh` passthrough).
-- Optionally **mint** (trusted-issuer profile) or **exchange Basic** (passthrough).
+- Optionally **sign the assertion + relay `/v1/auth/exchange`** (delegated
+  profile, §5.2/§14) or **exchange Basic** for a token (passthrough profile).
+  The bridge never mints tokens itself.
 - Serve nothing else in the default (thin) profile.
 
 ### 6.2 Endpoints (bridge)
@@ -254,7 +321,8 @@ Minimal, single-purpose, MIT.
 - `POST /session/logout` → relays `DELETE /v1/auth/token`.
 - `GET /session/config` → non-secret client config (service base URLs, enabled
   modules, tenant, theme defaults) so the embed can self-configure.
-- *(trusted-issuer only)* `POST /session/mint` → server-side mapped mint (audited).
+- *(delegated profile)* `POST /session/exchange` → builds the signed assertion for
+  the host-mapped subject and relays `POST /v1/auth/exchange`; returns the token.
 
 ### 6.3 Optional "proxy" profile
 For integrators who must **not** expose the JWT to browser JS or who want
@@ -267,8 +335,10 @@ an alternative, not the default. The front-end API clients take a `mode:
 ### 6.4 Config (bridge, env)
 `BRIDGE_PORT`, `HOST_ORIGIN` (postMessage target + CORS), `FILEENGINE_BRIDGE_URL`
 (:8090), service base URLs, `MODULES` (csv: core,search,collab,3d), `PROFILE`
-(oauth|trusted|passthrough), `SESSION_MODE` (direct|proxy), and — only for
-trusted-issuer — `FILEENGINE_JWT_SECRET` (guarded; never shipped to the browser).
+(oauth|delegated|passthrough), `SESSION_MODE` (direct|proxy); and — only for the
+delegated profile — `FE_INTEGRATION_ID` + `FE_INTEGRATION_PRIVATE_KEY` (the
+assertion-signing key; guarded, server-only, never shipped to the browser). The
+bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
 
 ---
 
@@ -376,16 +446,26 @@ trusted-issuer — `FILEENGINE_JWT_SECRET` (guarded; never shipped to the browse
    notifications.
 4. **M3 — Search & AI (Bundle B).** search, RAG chat (WS). Clearly excludable.
 5. **M4 — 3D / openBIM (Bundle D).** model viewer + BCF export.
-6. **M5 — Hardening.** proxy profile, trusted-issuer audit path, multi-origin
-   CORS upstream ask, docs/examples (React/Angular island demos), CDN publish.
+6. **M-U — Delegated exchange (upstream FileEngine, parallelizable).** Implement
+   §14 in core: integration registry (admin/ldap_manager), `POST /v1/auth/exchange`
+   (asymmetric assertion, pre-provisioned subject, role/TTL cap), delegation claims
+   + `auth.delegated_issue` audit event; then the bridge's `delegated` profile and
+   `SessionManager` silent path. This is the "tight integration" headline feature;
+   it lands independently of the front-end module milestones.
+7. **M5 — Hardening.** proxy profile, multi-origin CORS upstream ask, docs/examples
+   (React/Angular island demos), CDN publish.
 
 ---
 
 ## 13. Open decisions (confirm before/along M0)
 
-1. **Zero-login SSO?** Default is popup-OAuth (one interactive FileEngine login,
-   then silent). If true zero-login is required, adopt the trusted-issuer profile
-   (§5.2) and its hardening — confirm which.
+1. **Zero-login SSO — resolved.** The delegated silent-session profile (§5.2) via
+   the upstream `POST /v1/auth/exchange` (§14) is the chosen tight-integration
+   path: asymmetric assertion, shared LDAP directory, pre-provisioned subjects.
+   Popup-OAuth (§5.1) remains the no-upstream-change default for integrators who
+   don't share a directory. (Open sub-item: is delegated exchange required for the
+   *first* shippable release, or can front-end modules M1–M2 ship on popup-OAuth
+   while M-U proceeds in parallel?)
 2. **Thin vs proxy session** (§6.3): default thin (token in browser, direct calls,
    per-service CORS). Confirm whether any target integrator needs the token hidden
    / same-origin proxy in v1, or if that's an M5 option.
@@ -395,3 +475,82 @@ trusted-issuer — `FILEENGINE_JWT_SECRET` (guarded; never shipped to the browse
    entirely to keep the kit purely document-centric?
 5. **Composite `<fe-document-drawer>`** — build the convenience element in M1, or
    leave composition to integrators?
+
+---
+
+## 14. Upstream FileEngine additions (proposal) — delegated session exchange
+
+This is a **proposal for the core FileEngine stack** (http_bridge + ldap_manager),
+not the embed kit itself. It is the prerequisite for the delegated silent-session
+profile (§5.2) and the "tight integration" headline. It is additive and does not
+change existing auth. Applies to **Posture B** integrators (§5.0) with a shared
+LDAP source-of-truth.
+
+### 14.1 Integration registry (admin — ldap_manager)
+A tenant-admin surface (in the **official client**, consistent with the boundary)
+to register/rotate/revoke integrations. Fields per integration:
+- `integration_id` (issuer identifier used in the assertion `iss`).
+- **Public key / JWKS** (asymmetric; RSA-2048+/EC-P256). FileEngine stores only
+  the public key — never anything forge-capable.
+- `allowed_tenants` — the tenant(s) this integration may request subjects in.
+- `subject_scope` — which subjects it may assert (e.g. any member of an allowed
+  tenant; optionally restricted to a subtree/filter). Unknown subject ⇒ reject
+  (pre-provisioned only, v1).
+- `role_cap` (optional least-privilege ceiling; see §5.2) and `ttl_cap`
+  (≤ the normal `token_ttl`, default 15 min).
+- `enabled`, `created/rotated_at`, audit metadata.
+
+### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
+`POST /v1/auth/exchange` — request body a **signed assertion** (RFC 7523 JWT-bearer
+grant shape):
+```
+grant_type = urn:ietf:params:oauth:grant-type:jwt-bearer
+assertion  = <JWT signed by the integration's private key>
+    header : { alg: RS256|ES256, kid }
+    claims : { iss: integration_id, sub: <subject>, tenant, aud: "fileengine-exchange",
+               iat, exp (≤ ~60s), jti }
+```
+Server steps:
+1. Look up `integration_id` in the registry (must be enabled); verify the assertion
+   signature against the registered public key (`kid`-selected). Pin algs
+   (reject `none`/HS confusion), enforce `aud`, short `exp`, and single-use `jti`
+   (replay guard).
+2. Enforce `tenant ∈ allowed_tenants` and `sub ∈ subject_scope`.
+3. Resolve `sub` in the **shared LDAP** and read its roles live (as normal login
+   does). Absent ⇒ `404 subject_not_provisioned`.
+4. Apply `role_cap` (intersect) and `ttl_cap`.
+5. Mint the standard end-user HS256 session JWT (`mintJwt`) **plus** delegation
+   claims: `act = { sub: integration_id }`, `azp = integration_id`,
+   `amr = ["delegated"]`.
+6. Emit an **audit event** (§14.3). Respond `{ token, token_type: "Bearer",
+   expires_in }`. Refresh thereafter uses the existing `POST /v1/auth/refresh`
+   (which re-reads roles live and preserves the delegation markers).
+
+Notes: this endpoint is server-to-server (the integration's backend / the kit's
+Node bridge). Rate-limit per `integration_id`; it is a `/v1` route so it can carry
+the same monitoring/allow-list posture as the rest of the bridge.
+
+### 14.3 Audit
+New event `auth.delegated_issue` into the tamper-evident chain:
+`{ integration_id, subject, tenant, roles_granted, source_ip, jti, outcome }` —
+every delegated mint (and every rejection) is attributable, closing the "unaudited
+impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
+
+### 14.4 Security properties
+- **No shared signing secret.** FileEngine holds only integration *public* keys;
+  the global `FILEENGINE_JWT_SECRET` is never distributed to integrators.
+- **Bounded blast radius.** A compromised integration key is scoped to its tenants,
+  subject_scope, and role_cap, is independently revocable, and cannot cross tenants
+  or escalate to admin. Contrast: the raw JWT secret can forge anything, silently.
+- **Non-repudiation + full audit** of every issuance.
+- **Roles are truthful** (read live from the shared LDAP), never asserted by the
+  integration — the assertion names a *subject*, not its privileges.
+
+### 14.5 Effort / touch points (upstream)
+- `ldap_manager`: registry model + admin routes + rotation/revocation (mirrors the
+  existing service-credential machinery).
+- `http_bridge`: `/v1/auth/exchange` handler + assertion verification (extend
+  `jwt.h` with RS256/ES256 verify + JWKS lookup) + delegation claims in `mintJwt` +
+  audit emit.
+- `EVENT_CONTRACT`/audit: register `auth.delegated_issue`.
+- Docs: integration onboarding (key registration, assertion format, scopes).
