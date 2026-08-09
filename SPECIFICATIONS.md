@@ -41,6 +41,8 @@ end-user half; the official client keeps the governance half:
 | Metadata | Read/write per-document key/values | — |
 | Search / chat | Run search, RAG chat | MCP integration config, model/admin settings |
 | Profile / auth | Handled by the **session bridge**, not shipped as components | 2FA policy, user provisioning |
+| Integration credentials | (nothing) | Generate/manage inter-server integration keys — System config → *Integrations* (§14.1) |
+| Space/project provisioning | (nothing — end users operate *within* provisioned spaces) | Templates + apply, via the integration credential (config service, §14.7) |
 
 Non-goals: no tenant administration, no user/role management, no audit/security
 UI, no classifier or automation authoring, **no ACL/permission UI of any kind**
@@ -63,10 +65,11 @@ directory structure, not managed inside embedded components:
   that shares the identity source-of-truth also owns space provisioning, so a new
   application-level project maps to a pre-built, correctly-permissioned FileEngine
   space.
-- **Potential upstream value-add (noted, not required):** a higher-level
-  "space/project template" provisioning API (apply a named folder+ACL template for
-  a new project in one call) would make this cleaner than composing mkdir + grant
-  calls. Tracked as a candidate config-service enhancement, outside the kit.
+- **Provisioning surface — V1 (§14.7).** A higher-level "space/project template"
+  provisioning API (apply a named folder+ACL template for a new project in one
+  call) is a committed V1 upstream item, driven server-to-server by the embedding
+  application's **integration credential** (§14.1) — not by the embed kit or an end
+  user. It is how an embedding app stands up the directory structure it needs.
 
 ---
 
@@ -513,24 +516,36 @@ bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
 
 ## 12. Milestones
 
+**V1 goals (committed):** the tight-integration backbone plus the first usable
+end-user surface — M0, M1, and the upstream **M-U** (delegated exchange +
+integration registry & SPA *Integrations* UI + **provisioning surface** + the
+multi-origin CORS allow-list). Collaboration (M2) is a strong candidate to pull
+into V1; Search/AI (M3), 3D (M4), and deep-link SSO (M5) are post-V1 unless pulled
+forward.
+
 1. **M0 — Foundation.** Re-license `to-migrate` into `packages/core`; add the WS
-   companion + `SessionManager` (popup OAuth + refresh); Node bridge (default
-   profile); `<fe-session>`; theming tokens + light/dark; one demo page.
+   companion + `SessionManager` (popup OAuth + refresh); Node bridge (handshake
+   only); `<fe-session>`; theming tokens + light/dark; one demo page.
 2. **M1 — Core documents (Bundle A).** browser, uploader, preview (PDF/image/HTML),
-   versions, metadata, download. Ship as the first usable release.
-3. **M2 — Collaboration (Bundle C).** comments/threads + live WS, reviews,
-   notifications.
-4. **M3 — Search & AI (Bundle B).** search, RAG chat (WS). Clearly excludable.
-5. **M4 — 3D / openBIM (Bundle D).** model viewer + BCF export.
-6. **M-U — Delegated exchange (upstream FileEngine, parallelizable).** Implement
-   §14 in core: integration registry (admin/ldap_manager), `POST /v1/auth/exchange`
-   (asymmetric assertion, pre-provisioned subject, role/TTL cap), delegation claims
-   + `auth.delegated_issue` audit event; then the bridge's `delegated` profile and
-   `SessionManager` silent path. This is the "tight integration" headline feature;
-   it lands independently of the front-end module milestones.
-7. **M5 — Hardening & deep-link SSO.** multi-origin CORS allow-list upstream
-   (§14.6), deep-link SSO hand-off (`sso/handoff`+`redeem` + SPA landing, §5.5),
-   docs/examples (React/Angular island demos), CDN publish.
+   versions, metadata, download, grouped `<fe-document-drawer>`. First usable release.
+3. **M-U — Inter-server integration (upstream FileEngine) — V1.** Parallelizable
+   with M0/M1. Deliver §14 end-to-end:
+   - Integration **registry** + **SPA *Integrations* credential UI** (generate/
+     register key, scopes, rotate/revoke) — §14.1.
+   - `POST /v1/auth/exchange` for **delegated-user** *and* **integration-service**
+     tokens — §14.2; `auth.delegated_issue` audit.
+   - **Provisioning surface** + space templates + template editor — §14.7;
+     `provisioning.*` audit.
+   - **Multi-origin CORS allow-list** on `http_bridge` — §14.6.
+   - Bridge `delegated` profile + `SessionManager` silent path.
+   This is the "tight integration" headline and the payoff for Posture B (§5.0).
+4. **M2 — Collaboration (Bundle C).** comments/threads + live WS, reviews,
+   notifications. *(Pull into V1 if the launch integrator needs it.)*
+5. **M3 — Search & AI (Bundle B).** search, RAG chat (WS). Clearly excludable.
+6. **M4 — 3D / openBIM (Bundle D).** model viewer + BCF export.
+7. **M5 — Hardening & deep-link SSO.** deep-link SSO hand-off (`sso/handoff`+
+   `redeem` + SPA landing, §5.5), proxy-free audit pass, docs/examples
+   (React/Angular island demos), CDN publish.
 
 ---
 
@@ -569,18 +584,37 @@ profile (§5.2) and the "tight integration" headline. It is additive and does no
 change existing auth. Applies to **Posture B** integrators (§5.0) with a shared
 LDAP source-of-truth.
 
-### 14.1 Integration registry (admin — ldap_manager)
-A tenant-admin surface (in the **official client**, consistent with the boundary)
-to register/rotate/revoke integrations. Fields per integration:
+### 14.1 Integration registry + credential UI (admin — official SPA + ldap_manager) — **V1**
+
+An **inter-server integration credential** is a first-class, admin-managed identity
+representing a whole embedding application (not a user). It is **dual-purpose**:
+it can (a) mint delegated end-user sessions (§14.2) and (b) call the provisioning
+surface (§14.7) to stand up the directory structure that application needs. Both
+capabilities and their scopes are declared on the registry entry.
+
+**System-configuration UI (official SPA, admin-only).** A new *Integrations*
+section under System configuration to **generate and manage** integration
+credentials — consistent with the boundary (this is administrative, so it lives in
+the official client, never the embed kit). It supports:
+- **Create / generate.** Either register the integrator's **public key / JWKS**
+  (preferred — private key never touches FileEngine) *or* generate an asymmetric
+  keypair server-side and reveal the **private key once** for the integrator to
+  copy (convenience; never persisted). "API key generation" in the admin sense.
+- **Scope configuration** (below), **enable/disable**, **rotate** (add a new `kid`,
+  overlap window, retire old), **revoke**, and view **usage/audit**.
+
+**Registry entry (server-side, ldap_manager):**
 - `integration_id` (issuer identifier used in the assertion `iss`).
-- **Public key / JWKS** (asymmetric; RSA-2048+/EC-P256). FileEngine stores only
-  the public key — never anything forge-capable.
-- `allowed_tenants` — the tenant(s) this integration may request subjects in.
-- `subject_scope` — which subjects it may assert (e.g. any member of an allowed
-  tenant; optionally restricted to a subtree/filter). Unknown subject ⇒ reject
-  (pre-provisioned only, v1).
-- `role_cap` (optional least-privilege ceiling; see §5.2) and `ttl_cap`
-  (≤ the normal `token_ttl`, default 15 min).
+- **Public key(s) / JWKS** by `kid` (asymmetric; RSA-2048+/EC-P256). FileEngine
+  stores only public keys — never anything forge-capable.
+- **`capabilities`** — any of `session_exchange`, `provisioning`.
+- `allowed_tenants` — the tenant(s) this integration operates in.
+- `subject_scope` — which subjects it may assert for session exchange (e.g. any
+  member of an allowed tenant; optionally restricted to a subtree/filter). Unknown
+  subject ⇒ reject (pre-provisioned only, v1).
+- `role_cap` (optional least-privilege ceiling; §5.2) and `ttl_cap` (≤ `token_ttl`).
+- **`provisioning_scope`** — the root folder(s)/prefix under which it may create
+  space structures, and the **templates/roles** it is permitted to apply (§14.7).
 - `enabled`, `created/rotated_at`, audit metadata.
 
 ### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
@@ -609,6 +643,18 @@ Server steps:
    expires_in }`. Refresh thereafter uses the existing `POST /v1/auth/refresh`
    (which re-reads roles live and preserves the delegation markers).
 
+**Integration service token (for provisioning).** The same assertion mechanism also
+issues a token that acts **as the integration itself** (not an end user), used to
+call the provisioning surface (§14.7). Selected by the assertion audience /
+requested scope: `aud: "fileengine-provisioning"` (or `scope=provisioning`) ⇒ if the
+integration holds the `provisioning` capability, mint a **service-scoped** token
+whose `sub = integration_id`, `amr = ["integration"]`, carrying only the
+provisioning scope (bounded by `provisioning_scope`) — **no user roles, no ACL
+bypass**. It authorizes only the §14.7 provisioning routes, still enforced by
+core ACLs on the target roots. This keeps one credential for both jobs while
+keeping the two token *types* (delegated-user vs integration-service) distinct and
+separately auditable.
+
 Notes: this endpoint is server-to-server (the integration's backend / the kit's
 Node bridge). Rate-limit per `integration_id`; it is a `/v1` route so it can carry
 the same monitoring/allow-list posture as the rest of the bridge.
@@ -630,13 +676,21 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
   integration — the assertion names a *subject*, not its privileges.
 
 ### 14.5 Effort / touch points (upstream)
-- `ldap_manager`: registry model + admin routes + rotation/revocation (mirrors the
-  existing service-credential machinery).
-- `http_bridge`: `/v1/auth/exchange` handler + assertion verification (extend
-  `jwt.h` with RS256/ES256 verify + JWKS lookup) + delegation claims in `mintJwt` +
-  audit emit.
-- `EVENT_CONTRACT`/audit: register `auth.delegated_issue`.
-- Docs: integration onboarding (key registration, assertion format, scopes).
+- `ldap_manager`: integration **registry** model + admin routes + rotation/
+  revocation (mirrors existing service-credential machinery); **provisioning**
+  template store + apply/reconcile orchestration (§14.7).
+- **Official SPA (AGPL client):** new **System configuration → Integrations**
+  section — generate/register credential, configure scopes (session + provisioning),
+  rotate/revoke, view usage; plus the **provisioning template editor**.
+- `http_bridge`: `/v1/auth/exchange` (delegated-user **and** integration-service
+  tokens) + assertion verification (extend `jwt.h` with RS256/ES256 verify + JWKS)
+  + delegation/integration claims in `mintJwt`; multi-origin CORS allow-list (§14.6).
+- `core`: provisioning writes go through the core's existing dir/ACL/metadata ops
+  (no new write path); integration service-identity gets create+MANAGE_ACL on its
+  scoped root at registration.
+- `EVENT_CONTRACT`/audit: register `auth.delegated_issue`, `provisioning.*`.
+- Docs: integration onboarding (key registration, assertion format, scopes,
+  template authoring).
 
 ### 14.6 Related upstream items (CORS allow-list + deep-link SSO)
 
@@ -661,3 +715,144 @@ Two smaller upstream additions the embedding model depends on:
     code/token from the URL, and routes to the requested deep-link target.
   - Reuses the existing JWT infrastructure; no new trust root. Keeps long-lived
     bearers out of URLs when the code path is used.
+
+### 14.7 Provisioning surface (config service) — **V1** — full proposal
+
+A server-to-server API for an embedding application to **stand up and maintain the
+directory structure it needs** — standardized "project"/space folder trees with
+owners, roles, ACLs, and metadata already applied — so end users then simply
+operate within correctly-permissioned spaces (§2.1). Called with an **integration
+service token** (§14.2, `provisioning` capability) by the integrator's backend;
+**never** exposed to the browser or the embed kit. Base path `/v1/provisioning`.
+
+Design principles: **declarative** (describe the desired space, don't script
+mkdir/grant), **idempotent + reconcilable** (safe to re-apply on every "new
+project" event; converges to the template), **scoped** (confined to the
+integration's roots/templates/roles; core ACLs still enforce every write), and
+**auditable** (every action in the tamper-evident chain).
+
+#### 14.7.1 Space template (declarative model)
+An admin-authored, versioned template describes a desired subtree. Bound to
+**existing** roles/claims (identity/role *creation* stays with the shared directory
+/ ldap_manager — §14.7.6). Parameterized via `${...}` substitution.
+
+```jsonc
+{
+  "template_id": "project-standard",
+  "version": 3,
+  "params": ["project_code", "manager_role", "member_role"],   // required inputs
+  "root": {
+    "name": "${project_code}",
+    "metadata": { "type": "project", "code": "${project_code}" },
+    "acls": [
+      { "principal": "role:${manager_role}", "allow": ["r","w","d","m"] },
+      { "principal": "role:${member_role}",  "allow": ["r","w"] },
+      { "principal": "everyone",             "deny":  ["r"] }        // gate the space
+    ],
+    "children": [
+      { "name": "Documents" },
+      { "name": "Drawings",  "children": [ { "name": "Superseded" } ] },
+      { "name": "Incoming",  "acls": [ { "principal": "role:${member_role}", "allow": ["r","w"] } ] },
+      { "name": "Approved",  "acls": [ { "principal": "role:${member_role}", "allow": ["r"] } ] }
+    ]
+  }
+}
+```
+- Child folders **inherit** the parent's ACLs unless they declare their own
+  (mirrors the core's ACL_INHERIT semantics); a child may add or override.
+- `metadata` seeds per-node custom metadata. Permission keys reuse the kit's letter
+  vocabulary (`r w d l u v b s m i` …, §7 of the platform's ACL model).
+
+#### 14.7.2 Endpoints
+
+**Spaces (integration-driven):**
+- `POST /v1/provisioning/spaces` — apply a template, creating/reconciling a space.
+  Body: `{ template_id, version?, tenant, parent_uid?, params:{...},
+  external_id, mode?: "create"|"reconcile"|"enforce", dry_run?: bool }`.
+  - `external_id` is the integrator's own key (e.g. their project id) → **idempotency**:
+    a repeat call with the same `external_id` returns the same space, never a
+    duplicate. `parent_uid` defaults to the integration's scoped root.
+  - `mode`: `create` (fail if exists) · `reconcile` (default: create-missing,
+    additive, never destructive) · `enforce` (also correct drifted ACLs/metadata to
+    match the template; still non-destructive to user content).
+  - `dry_run:true` → return the **plan** (nodes/ACLs/metadata that would be
+    created/updated) without applying.
+  - Response: `{ space_uid, external_id, template_id, version, status:"created"|"reconciled"|"noop",
+    nodes:[{ path, uid, action:"created"|"existing"|"updated" }], warnings:[...] }`.
+- `GET /v1/provisioning/spaces?tenant=&external_id=&template_id=` — list within scope.
+- `GET /v1/provisioning/spaces/{space_uid}` — inspect: node map, applied
+  template+version, and **drift** vs the current template.
+- `PATCH /v1/provisioning/spaces/{space_uid}` — re-apply / upgrade to a newer
+  template version (reconcile|enforce), or update params (e.g. rename bindings).
+- `POST /v1/provisioning/spaces/{space_uid}/grants` — bounded ACL adjustment on the
+  space (add/remove a permitted role/claim grant, within `provisioning_scope`), for
+  membership-shaped changes that don't warrant a full re-template.
+- `DELETE /v1/provisioning/spaces/{space_uid}` — **soft-delete** (scope-checked,
+  honors the core's recoverable-delete + versioning); optional, off by default.
+
+**Templates (admin — official SPA):**
+- `GET /v1/provisioning/templates` — list (an integration sees only the templates
+  its `provisioning_scope` permits).
+- `GET /v1/provisioning/templates/{id}` — fetch (+ versions).
+- `POST /v1/provisioning/templates` · `PUT /v1/provisioning/templates/{id}` — create
+  / new version (admin only; edited in the SPA *Integrations/Provisioning* section).
+- `DELETE /v1/provisioning/templates/{id}` — retire (existing spaces keep their
+  applied version).
+
+#### 14.7.3 Apply semantics (idempotency, reconciliation, transactions)
+- **Idempotent by `external_id`.** First apply creates; subsequent applies reconcile
+  to the (possibly upgraded) template. This makes "provision on project creation"
+  safe to call unconditionally and safe to retry.
+- **Never destructive by default.** Reconcile/enforce only *add* folders and
+  *adjust ACLs/metadata* to match; they never delete user folders or content. Removal
+  is an explicit, separately-scoped operation.
+- **Best-effort with a full report, not silent partial.** A multi-node apply returns
+  per-node `action`/`warnings`; a mid-apply failure leaves a consistent, resumable
+  state (re-apply completes it). `dry_run` lets the caller preview before committing.
+- **Drift reporting** (`GET`/inspect) surfaces where a space diverged from its
+  template so an operator/integration can choose to `enforce`.
+
+#### 14.7.4 Authorization & scope
+- Requires an **integration service token** (`sub = integration_id`,
+  `amr:["integration"]`, `provisioning` capability). No user roles, no ACL bypass.
+- Enforced ceilings from the registry `provisioning_scope` (§14.1): allowed
+  **tenant(s)**, allowed **root prefix(es)** (spaces may only be created under
+  them), allowed **template ids**, and allowed **principals/roles** it may grant
+  (e.g. may bind `role:project:*` but never `system_admin`).
+- The integration's service identity must hold **create + MANAGE_ACL on its scoped
+  root** — established once at registration (grant on the root), so provisioning
+  writes are ordinary ACL-checked core operations, not a privileged bypass.
+- Rate-limited per `integration_id`; server-to-server only (not CORS-exposed).
+
+#### 14.7.5 Audit
+New events into the tamper-evident chain, each `{ integration_id, tenant,
+template_id, version, space_uid, external_id, mode, outcome, source_ip }`:
+`provisioning.space_applied`, `provisioning.space_reconciled`,
+`provisioning.space_deleted`, and (admin) `provisioning.template_changed`.
+
+#### 14.7.6 Boundary with identity (roles/members)
+Provisioning manages **structure + ACL + metadata**, binding to roles/claims that
+already exist. **Creating roles/groups and managing membership stays in the shared
+directory** (the integrator writes to the common LDAP, or uses an ldap_manager
+admin surface) — consistent with Posture B (§5.0) and the source-of-truth boundary.
+This keeps provisioning from becoming a second, competing identity authority. (A
+convenience "ensure these role bindings exist" hook may be considered later, but
+role lifecycle is out of the provisioning surface's V1 remit.)
+
+#### 14.7.7 Home / implementation
+Templates + apply orchestration live in the **config service (ldap_manager) + core**;
+all folder/ACL/metadata writes go through the **core** (so existing ACL, versioning,
+audit, and tenancy invariants hold unchanged). The **template editor** is an admin
+surface in the official SPA (alongside the §14.1 *Integrations* UI), never the embed
+kit. The composable primitives (`POST /v1/dirs/{uid}`, `POST /v1/nodes/{uid}/permissions`)
+remain available to an in-scope integration token for bespoke needs, but templates
+are the intended, auditable path.
+
+### 14.8 V1 scope note
+
+Per the V1 goals (§12), the following upstream items are **committed for V1**, not
+deferred: the integration registry + SPA *Integrations* credential UI (§14.1), the
+delegated exchange endpoint incl. the integration service token (§14.2), and the
+provisioning surface + space templates (§14.7). The multi-origin CORS allow-list
+(§14.6) is a prerequisite for any real embed and ships with them. Deep-link SSO
+(§5.5 / §14.6) remains M5 unless pulled forward.
