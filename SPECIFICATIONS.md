@@ -34,7 +34,7 @@ end-user half; the official client keeps the governance half:
 
 | Capability | In the embed kit (end-user) | Stays in official client (admin) |
 |---|---|---|
-| Permissions / ACL | *Read-only* view of who-can-do-what (optional) | Grant/revoke, recursive cascade, principal picker |
+| Permissions / ACL | **Not in the kit at all** — permissioning is handled by pre-provisioned directory structures (§2.1) | Grant/revoke, ACL editing, principal picker (config service / official client) |
 | Reviews | Request a review, respond (approve/reject/ack) | Automation that *raises* reviews (folder_actions) |
 | Folder actions | (nothing) | Bindings, routes, run log |
 | Classifiers / templates | (nothing) | Classifier-set + notify/email template editors |
@@ -43,7 +43,30 @@ end-user half; the official client keeps the governance half:
 | Profile / auth | Handled by the **session bridge**, not shipped as components | 2FA policy, user provisioning |
 
 Non-goals: no tenant administration, no user/role management, no audit/security
-UI, no classifier or automation authoring.
+UI, no classifier or automation authoring, **no ACL/permission UI of any kind**
+(not even read-only).
+
+### 2.1 Permissioning model — pre-provisioned spaces (no ACL UI in the kit)
+
+Permissions are **not an end-user concern** and are deliberately absent from the
+embed kit. Access is expected to be correct *by construction* through the
+directory structure, not managed inside embedded components:
+
+- An external system (the integrator's backend) **provisions standardized "project"
+  / space folder structures ahead of time** — with the right owners, roles, and
+  ACLs already applied — by reaching into FileEngine's **configuration/admin APIs**
+  (server-to-server, with appropriate rights), *not* through the embed kit.
+- End users in the embedded components then simply operate **within** those
+  pre-permissioned spaces; the JWT's roles + the folder ACLs enforce access
+  server-side. There is nothing for the end user to configure.
+- This pairs naturally with Posture B (§5.0): an infrastructure-level integrator
+  that shares the identity source-of-truth also owns space provisioning, so a new
+  application-level project maps to a pre-built, correctly-permissioned FileEngine
+  space.
+- **Potential upstream value-add (noted, not required):** a higher-level
+  "space/project template" provisioning API (apply a named folder+ACL template for
+  a new project in one call) would make this cleaner than composing mkdir + grant
+  calls. Tracked as a candidate config-service enhancement, outside the kit.
 
 ---
 
@@ -91,8 +114,9 @@ Node/Express session bridge (this repo) ── OAuth popup/iframe ── FileEng
 3. **Session core** (`<fe-session>` + `SessionManager`) — the single shared
    dependency: holds the token, the refresh handler, tenant, base URLs, and a
    registry the components discover via the message bus.
-4. **Session bridge (Node/Express)** — mints/refreshes the token; does **not**
-   proxy data by default (see 6.3 for the optional proxy profile).
+4. **Session bridge (Node/Express)** — **handshake only**. It negotiates/refreshes
+   the session token and never proxies data: once the client holds a valid JWT it
+   calls FileEngine's REST/WS interfaces **directly**. As thin as possible.
 
 ### 4.2 One token, whole stack
 
@@ -117,11 +141,12 @@ AEC/CAD/CAM/BIM. Therefore:
 - **Feature capabilities are opt-in per component** via boolean attributes
   (e.g. `<fe-document-preview markup>` enables the annotation overlay; without it
   the markup module is never loaded). AI, markup, and 3D are all such opt-ins.
-- **Defense in depth at the bridge (optional):** the bridge's `MODULES` config
-  gates which upstream services it will help reach. In **proxy mode** (6.3) a
-  disabled module's routes return 404 — a crafted request can't reach, e.g., the
-  AI service even if the component were force-loaded. In thin-bridge mode the
-  equivalent lever is not CORS-allow-listing the host origin on that service.
+- **Access is enforced by CORS + ACLs, not the bridge.** Since the bridge is
+  handshake-only (never a data proxy), the levers to *not* expose a capability are:
+  (a) don't import/enable the component, and (b) don't add the embedding domain to
+  that service's CORS allow-list (§5.4). A disabled module's service is simply not
+  reachable from the embedding origin. The JWT roles + folder ACLs remain the real
+  authority regardless.
 - **Server-side truth:** module selection is a UX/attack-surface decision, never
   the security boundary — the JWT's roles + core ACLs remain authoritative.
 
@@ -144,8 +169,9 @@ Endpoints below are the concrete contract (base path per service).
 - `<fe-version-history>` — `GET /v1/files/{uid}/versions`,
   `.../versions/{ts}`, `POST /v1/files/{uid}/restore`.
 - `<fe-metadata>` — `GET|PUT|DELETE /v1/nodes/{uid}/metadata[/{key}]`.
-- `<fe-acl-view>` *(optional, read-only)* — `GET /v1/nodes/{uid}/acls`.
 - `<fe-download>` — helper for `GET /v1/files/{uid}/content` (uses `API_REST.download`).
+
+*(No ACL component — permissioning is pre-provisioned, §2.1.)*
 
 **Bundle B — Search & AI** (csai :8092; opt-in, easily excluded)
 - `<fe-search>` — `POST /search {query,limit,fuzzy}`; emits `fe:result-select`.
@@ -166,9 +192,14 @@ Endpoints below are the concrete contract (base path per service).
   via discussion; BCF export `POST /bcf/2.1/bcf-xml/export {topics}`.
 
 **Composite convenience (optional)**
-- `<fe-document-drawer>` — composes preview + comments + versions for a single
-  `uid` (mirrors the SPA's `FileDetailsDrawer` role) for integrators who want one
-  drop-in element instead of wiring several.
+**Grouped utility widget (build it).** Each drawer *tab* is already its own
+independently-embeddable component above (preview, comments, versions, metadata).
+In addition, ship a grouped convenience widget:
+- `<fe-document-drawer>` — a tabbed widget composing preview + comments + versions
+  + metadata for a single `uid` (mirrors the SPA's `FileDetailsDrawer`), so an
+  integrator can drop in one element instead of wiring several. It is itself just a
+  composition over the standalone components (which remain usable on their own), and
+  respects the same à la carte opt-ins (e.g. omit the AI/markup tabs).
 
 ---
 
@@ -286,25 +317,65 @@ Each user has real FileEngine/LDAP credentials; the bridge exchanges
 Real per-user audit; requires provisioning FileEngine users. Useful when the host
 already stores FileEngine credentials or wants an explicit login form.
 
-### 5.4 CORS requirements (must be configured on the FileEngine side)
+### 5.4 CORS — strictly FileEngine's responsibility (embedding-domain allow-list)
 
-- **Bridge** (`http_bridge`): `HTTP_CORS_ORIGIN` accepts a **single** origin (no
-  list, no `*`, no `Allow-Credentials` — fine for Bearer). Allowed headers already
-  include `Authorization`, `Content-Type`, `Range`, `X-Tenant`. **Limitation:**
-  one bridge instance serves one host origin; multiple host origins need a code
-  change (origin allow-list matching) — call this out to the FileEngine operator,
-  and file it as an upstream enhancement if multi-tenant hosting is required.
-- **Downstream services** each have their own env allow-list, independent of the
-  bridge: `CSAI_CORS_ORIGINS`, `DISC_CORS_ORIGINS`, `BCF_CORS_ORIGINS`,
-  `FA_CORS_ORIGINS` (these set `allow_credentials`, all methods/headers). Only the
-  services whose modules are enabled need the host origin added — this is the
-  natural à la carte lever in thin-bridge mode.
+Because the bridge is handshake-only and the client calls FileEngine **directly**,
+the origin allow-list is owned entirely by the **FileEngine deployment + component
+configuration**, not by the embed kit or the host application. The operator
+explicitly white-lists the specific **embedding domain(s)** that may reach each
+service. This is the single, authoritative access lever for browser-origin access.
+
+- **Downstream services** (search/RAG, discussion, BCF, folder_actions) each already
+  take a **list** of origins via env: `CSAI_CORS_ORIGINS`, `DISC_CORS_ORIGINS`,
+  `BCF_CORS_ORIGINS`, `FA_CORS_ORIGINS` (`allow_credentials`, all methods/headers).
+  Add only the embedding domains for the services whose modules are enabled — this
+  *is* the à la carte access boundary.
+- **Bridge / core files API** (`http_bridge`): today `HTTP_CORS_ORIGIN` accepts a
+  **single** origin (no list). Since the model requires white-listing **multiple**
+  specific embedding domains per deployment, this is a confirmed **upstream
+  requirement**: `http_bridge` must accept an **allow-list** and echo the matching
+  request origin (see §14.6). Allowed headers already include `Authorization`,
+  `Content-Type`, `Range`, `X-Tenant`.
+- Never `*`. Each embedding domain is named explicitly; adding/removing an embed is
+  a FileEngine-side config change, giving the operator a clean audit + kill-switch.
+
+### 5.5 Deep-link SSO into the official FileEngine client (no repeated login)
+
+An embedded component can hand the user out to the **full official FileEngine SPA**
+deep-linked to a specific target (a file, folder, review, thread, 3D viewpoint,
+chat) **carrying the current session — no second login**. This is cross-origin
+(host app → FileEngine SPA), so the session is handed off explicitly:
+
+- **Recommended — one-time hand-off code.** `SessionManager.openInFileEngine(target)`
+  requests a short-lived (~30–60 s), **single-use** hand-off code bound to the
+  current session's subject/tenant, then opens
+  `https://<fileengine-spa>/#/<route>?…&sso=<code>` (new tab/window). The SPA's
+  landing route **redeems** the code (`POST /v1/auth/sso/redeem {code}` →
+  `{token, expires_in}`), adopts the session as it does post-login, **strips** the
+  code from the URL (`history.replaceState`), and routes to the deep-link target.
+  No long-lived bearer ever appears in a URL/history/referrer.
+- **Fallback (no upstream code endpoint yet).** Pass the existing bearer in the URL
+  **fragment** (`#token=…&expires_in=…`), reusing the SPA's existing OAuth
+  fragment-adoption path; the SPA stores it and immediately strips it. Simpler, but
+  the token transits the URL — HTTPS-only, short TTL, immediate strip; prefer the
+  one-time code.
+- **Targets** map to existing SPA routes (from the frontend inventory): `/files`
+  (`?folder=`/`?file=`), `/preview/:uid`, `/chat`, `/dashboard`, and comment/review
+  anchors. Works in every session posture (popup-OAuth, delegated, passthrough).
+- **Upstream support needed:** (a) a small SPA **SSO landing** that adopts a
+  redeemed/fragment session and routes to the target; (b) optionally the
+  `sso/handoff` + `sso/redeem` endpoints (single-use, short TTL, audited) — §14.6.
+- Components expose this as an **opt-in** affordance (e.g. an "Open in FileEngine"
+  action / `deep-link` attribute); integrators who don't want the hand-off simply
+  don't enable it.
 
 ---
 
 ## 6. Backend session bridge (Node/Express)
 
-Minimal, single-purpose, MIT.
+Minimal, single-purpose, MIT. **Handshake only — it is never a data proxy.** Its
+sole job is to get a valid JWT into the client; all document traffic then goes
+client ↔ FileEngine directly (§5.4).
 
 ### 6.1 Responsibilities
 - Serve the OAuth **login start** + **callback** (`postMessage`) pages.
@@ -312,7 +383,9 @@ Minimal, single-purpose, MIT.
 - Optionally **sign the assertion + relay `/v1/auth/exchange`** (delegated
   profile, §5.2/§14) or **exchange Basic** for a token (passthrough profile).
   The bridge never mints tokens itself.
-- Serve nothing else in the default (thin) profile.
+- Optionally request a **deep-link SSO hand-off code** for "Open in FileEngine"
+  (§5.5).
+- Serve nothing else. No data/proxy routes exist.
 
 ### 6.2 Endpoints (bridge)
 - `GET /session/login?provider=&state=` → 302 to FileEngine OAuth (return_to = callback).
@@ -323,19 +396,19 @@ Minimal, single-purpose, MIT.
   modules, tenant, theme defaults) so the embed can self-configure.
 - *(delegated profile)* `POST /session/exchange` → builds the signed assertion for
   the host-mapped subject and relays `POST /v1/auth/exchange`; returns the token.
+- *(deep-link SSO)* `POST /session/handoff` → obtains a one-time SSO code (§5.5) for
+  an "Open in FileEngine" link.
 
-### 6.3 Optional "proxy" profile
-For integrators who must **not** expose the JWT to browser JS or who want
-hard module gating and same-origin calls: the bridge proxies all service calls
-(REST + WebSocket + Range/streaming), holds the token in a server session
-(httpOnly cookie), and returns 404 for disabled modules. Heavier; documented as
-an alternative, not the default. The front-end API clients take a `mode:
-'direct'|'proxy'` switch so the same components work either way.
+### 6.3 Explicit non-goal — no data proxy
+The bridge does **not** proxy REST/WebSocket/streaming traffic, does not hold the
+token server-side, and offers no `direct|proxy` switch. Keeping the JWT in the
+client and calling FileEngine directly is the intended model; access is governed by
+FileEngine's CORS allow-list (§5.4) + ACLs, not by a bridge in the data path.
 
 ### 6.4 Config (bridge, env)
-`BRIDGE_PORT`, `HOST_ORIGIN` (postMessage target + CORS), `FILEENGINE_BRIDGE_URL`
-(:8090), service base URLs, `MODULES` (csv: core,search,collab,3d), `PROFILE`
-(oauth|delegated|passthrough), `SESSION_MODE` (direct|proxy); and — only for the
+`BRIDGE_PORT`, `HOST_ORIGIN` (postMessage target), `FILEENGINE_BRIDGE_URL` (:8090),
+`FILEENGINE_SPA_URL` (deep-link base), service base URLs, `MODULES` (csv:
+core,search,collab,3d), `PROFILE` (oauth|delegated|passthrough); and — only for the
 delegated profile — `FE_INTEGRATION_ID` + `FE_INTEGRATION_PRIVATE_KEY` (the
 assertion-signing key; guarded, server-only, never shipped to the browser). The
 bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
@@ -407,10 +480,13 @@ bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
 
 ## 10. Security considerations
 
-- Token in memory only (default profile); never `localStorage`/cookie unless
-  proxy profile (then httpOnly + SameSite).
+- Token in JS memory only — never `localStorage`/cookie (there is no proxy/cookie
+  profile).
 - Strict `postMessage` origin + nonce validation on the login handshake.
-- CORS is per-origin, never `*`; document exact operator config.
+- Deep-link SSO uses a **single-use, short-TTL** hand-off code (§5.5); avoid the
+  bearer-in-fragment fallback except HTTPS-only with immediate strip.
+- CORS is an explicit FileEngine-side allow-list of embedding domains, never `*`
+  (§5.4); adding/removing an embed is an auditable operator config change.
 - Trusted-issuer profile treated as an **impersonation key**: guarded env,
   audited mints, short TTL, never shipped to the browser.
 - Module gating is attack-surface reduction, not authorization — ACLs/roles in
@@ -452,8 +528,9 @@ bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
    + `auth.delegated_issue` audit event; then the bridge's `delegated` profile and
    `SessionManager` silent path. This is the "tight integration" headline feature;
    it lands independently of the front-end module milestones.
-7. **M5 — Hardening.** proxy profile, multi-origin CORS upstream ask, docs/examples
-   (React/Angular island demos), CDN publish.
+7. **M5 — Hardening & deep-link SSO.** multi-origin CORS allow-list upstream
+   (§14.6), deep-link SSO hand-off (`sso/handoff`+`redeem` + SPA landing, §5.5),
+   docs/examples (React/Angular island demos), CDN publish.
 
 ---
 
@@ -466,15 +543,21 @@ bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
    don't share a directory. (Open sub-item: is delegated exchange required for the
    *first* shippable release, or can front-end modules M1–M2 ship on popup-OAuth
    while M-U proceeds in parallel?)
-2. **Thin vs proxy session** (§6.3): default thin (token in browser, direct calls,
-   per-service CORS). Confirm whether any target integrator needs the token hidden
-   / same-origin proxy in v1, or if that's an M5 option.
-3. **Multi-host-origin** on one FileEngine instance requires an upstream CORS
-   allow-list change (§5.4). Needed for v1, or single-origin per deployment?
-4. **`<fe-acl-view>`** (read-only permissions) — include in Bundle A, or omit
-   entirely to keep the kit purely document-centric?
-5. **Composite `<fe-document-drawer>`** — build the convenience element in M1, or
-   leave composition to integrators?
+2. **Thin vs proxy — resolved: thin only.** The bridge negotiates the session to
+   the point the client holds a valid JWT, then the client calls FileEngine's REST
+   interface **directly**. No data proxy, no server-held token (§6.3). The CORS
+   allow-list is strictly FileEngine's responsibility (§5.4).
+3. **Multi-origin CORS — resolved: required, FileEngine-side.** The allow-list of
+   specific embedding domains is owned by the FileEngine deployment + component
+   config. Downstream services already take a list; `http_bridge` must be extended
+   to a multi-origin allow-list (upstream §14.6).
+4. **ACL component — resolved: excluded entirely.** No ACL UI (not even read-only).
+   Permissioning is not an end-user concern; it is handled by pre-provisioned
+   directory structures set up by external systems via FileEngine's config service
+   (§2.1).
+5. **Composite widget — resolved: build it.** Each drawer tab is its own
+   embeddable component *and* a grouped `<fe-document-drawer>` utility widget is
+   provided (built in M1), composing the standalone tabs (§4.4).
 
 ---
 
@@ -554,3 +637,27 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
   audit emit.
 - `EVENT_CONTRACT`/audit: register `auth.delegated_issue`.
 - Docs: integration onboarding (key registration, assertion format, scopes).
+
+### 14.6 Related upstream items (CORS allow-list + deep-link SSO)
+
+Two smaller upstream additions the embedding model depends on:
+
+- **Multi-origin CORS on `http_bridge` (§5.4).** Today `HTTP_CORS_ORIGIN` echoes a
+  single origin. Extend it to a configured **allow-list** of embedding domains:
+  match the request `Origin` against the list and echo it (with `Vary: Origin`),
+  else emit no CORS headers. Never `*`. The downstream FastAPI services already
+  accept a list, so this only closes the bridge/core-files gap. Env e.g.
+  `HTTP_CORS_ORIGINS` (csv). This is the single authoritative browser-origin lever.
+
+- **Deep-link SSO hand-off (§5.5).** To open the official SPA deep-linked without a
+  second login:
+  - `POST /v1/auth/sso/handoff` (Bearer) → `{ code, expires_in }` — mints a
+    **single-use**, ~30–60 s code bound to the caller's session (subject/tenant),
+    stored server-side (or as a signed, self-contained one-time token). Audited.
+  - `POST /v1/auth/sso/redeem` `{ code }` → `{ token, expires_in }` — redeems once,
+    returns a normal session JWT; further redemptions fail. Audited.
+  - **SPA support:** an `sso` landing that calls `redeem` (or adopts a `#token`
+    fragment in the fallback), stores the session as post-login, strips the
+    code/token from the URL, and routes to the requested deep-link target.
+  - Reuses the existing JWT infrastructure; no new trust root. Keeps long-lived
+    bearers out of URLs when the code path is used.
