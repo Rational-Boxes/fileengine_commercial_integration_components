@@ -64,3 +64,10 @@ test('each assertion has a unique jti (single-use)', () => {
   const b = decodeSeg(sign({ sub: 'u' }).split('.')[1])
   assert.notEqual(a.jti, b.jti)
 })
+
+test('token_type defaults to delegated and can be set to service', () => {
+  const { privatePem } = loadOrCreateKeypair(priv)
+  const sign = makeSigner({ issuer: 'x', audience: AUD, privatePem })
+  assert.equal(decodeSeg(sign({ sub: 'u' }).split('.')[1]).token_type, 'delegated')
+  assert.equal(decodeSeg(sign({ sub: 'svc:x', tokenType: 'service' }).split('.')[1]).token_type, 'service')
+})

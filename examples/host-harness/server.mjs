@@ -107,7 +107,7 @@ const server = createServer(async (req, res) => {
     if (!body || !body.sub) {
       return send(res, 400, JSON.stringify({ error: 'sub (delegated username) required' }), 'application/json')
     }
-    const assertion = signAssertion({ sub: body.sub, tenant: body.tenant })
+    const assertion = signAssertion({ sub: body.sub, tenant: body.tenant, tokenType: body.token_type })
     const form = new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion,
