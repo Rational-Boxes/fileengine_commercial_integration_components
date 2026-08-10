@@ -1,0 +1,13 @@
+{
+  "name": "fileengine-embed-host-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone mock host application for manual end-to-end testing of the FileEngine embedding kit over an ngrok tunnel.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env server.mjs",
+    "start:noenv": "node server.mjs"
+  },
+  "engines": { "node": ">=20" }
+}

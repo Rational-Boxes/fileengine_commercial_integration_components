@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FileEngine Embed — Host Harness</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --muted:#667; --accent:#2563eb; --border:#e5e7eb; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#0b0d10; --fg:#e8eaed; --muted:#9aa; --border:#222; } }
+  body { font: 14px/1.5 system-ui, sans-serif; margin:0; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; }
+  main { display:grid; grid-template-columns:340px 1fr; gap:0; min-height:calc(100vh - 52px); }
+  aside { border-right:1px solid var(--border); padding:16px 18px; }
+  section { padding:16px 20px; }
+  .row { margin:10px 0; }
+  label { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px; }
+  button { padding:7px 12px; border:1px solid var(--border); border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; font:inherit; }
+  button.ghost { background:transparent; color:var(--fg); }
+  code, pre { background:color-mix(in srgb, var(--fg) 8%, transparent); border-radius:6px; }
+  pre { padding:10px; overflow:auto; max-height:280px; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  #mount { border:1px dashed var(--border); border-radius:10px; padding:24px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FileEngine Embed — Host Harness</h1>
+  <span class="pill" id="profilePill">profile: …</span>
+  <span class="pill" id="tenantPill">tenant: …</span>
+  <span class="pill" id="sessionPill">session: none</span>
+</header>
+<main>
+  <aside>
+    <div class="row"><label>Session</label>
+      <button id="signin">Sign in (popup OAuth)</button>
+      <button id="refresh" class="ghost">Refresh</button>
+      <button id="logout" class="ghost">Logout</button>
+    </div>
+    <div class="row"><label>Smoke test (proves token + CORS)</label>
+      <button id="whoami" class="ghost">GET /v1/whoami</button>
+      <button id="tenants" class="ghost">GET /v1/tenants</button>
+    </div>
+    <div class="row"><label>Config (/config)</label>
+      <pre id="cfg">loading…</pre>
+    </div>
+  </aside>
+  <section>
+    <div class="row"><label>Result</label><pre id="out">—</pre></div>
+    <div class="row"><label>Embedded components (à la carte)</label>
+      <div id="mount">
+        Components mount here once the kit's M0/M1 modules exist.<br>
+        This harness already exercises the full <b>session handshake + CORS</b> path above.
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+const out = (v) => document.getElementById('out').textContent =
+  typeof v === 'string' ? v : JSON.stringify(v, null, 2)
+let cfg = null, token = null, popup = null
+
+const cfgRes = await fetch('/config'); cfg = await cfgRes.json()
+document.getElementById('cfg').textContent = JSON.stringify(cfg, null, 2)
+document.getElementById('profilePill').textContent = 'profile: ' + cfg.profile
+document.getElementById('tenantPill').textContent = 'tenant: ' + (cfg.tenant || '(unset)')
+
+function setSession(t) {
+  token = t
+  document.getElementById('sessionPill').textContent = 'session: ' + (t ? 'active' : 'none')
+}
+
+// Popup-OAuth (§5.1): open the FileEngine OAuth start with return_to = our callback,
+// capture the token via postMessage from the callback page.
+document.getElementById('signin').onclick = () => {
+  const ret = cfg.publicOrigin + cfg.callbackPath
+  const url = new URL(cfg.fileengine.api + '/v1/auth/oauth/' + cfg.oauthProvider)
+  url.searchParams.set('return_to', ret)
+  url.searchParams.set('state', crypto.randomUUID())
+  popup = window.open(url, 'fe-signin', 'width=520,height=640')
+  out('Opened OAuth popup → ' + url)
+}
+window.addEventListener('message', (e) => {
+  if (e.origin !== cfg.publicOrigin) return          // pin origin
+  if (e.data && e.data.source === 'fe-oauth' && e.data.token) {
+    setSession(e.data.token)
+    out({ captured: 'token', expires_in: e.data.expires_in })
+    if (popup) popup.close()
+  }
+})
+
+async function call(path) {
+  if (!token) return out('sign in first')
+  try {
+    const r = await fetch(cfg.fileengine.api + path, {
+      headers: { Authorization: 'Bearer ' + token, ...(cfg.tenant ? { 'X-Tenant': cfg.tenant } : {}) },
+    })
+    out({ status: r.status, body: await r.json().catch(() => '(non-json)') })
+  } catch (err) { out('fetch failed (CORS not allowing this origin?): ' + err) }
+}
+document.getElementById('whoami').onclick = () => call('/v1/whoami')
+document.getElementById('tenants').onclick = () => call('/v1/tenants')
+document.getElementById('refresh').onclick = () => call('/v1/auth/refresh')
+document.getElementById('logout').onclick = () => { setSession(null); out('cleared') }
+
+// TODO(M0/M1): import cfg.modules from cfg.kitBase and mount <fe-session> + <fe-*>.
+</script>
+</body>
+</html>
