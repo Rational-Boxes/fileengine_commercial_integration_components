@@ -779,6 +779,14 @@ entry:
 - `enabled`, `created/rotated_at`, audit metadata.
 
 ### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
+
+**The imported public key is the single authorization gate for both operation
+classes.** Every **provisioning** call and every **user session hand-off** is
+authorized by the *same* check: verifying an assertion **signed by the integration's
+private key** against the **imported public key** (§14.1). No valid signature ⇒ no
+token, for either job. One key set gates everything the integration can do; revoking
+it (removing the public key from deployment config) instantly closes both.
+
 `POST /v1/auth/exchange` — request body a **signed assertion** (RFC 7523 JWT-bearer
 grant shape):
 ```
