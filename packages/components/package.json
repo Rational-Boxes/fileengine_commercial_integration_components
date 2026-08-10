@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     "./file-browser": "./src/fe-file-browser.js",
-    "./document-preview": "./src/fe-document-preview.js"
+    "./document-preview": "./src/fe-document-preview.js",
+    "./uploader": "./src/fe-uploader.js"
   },
   "files": ["src"],
   "scripts": {
