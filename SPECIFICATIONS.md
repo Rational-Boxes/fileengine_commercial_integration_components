@@ -42,7 +42,7 @@ end-user half; the official client keeps the governance half:
 | Classifiers / templates | (nothing) | Classifier-set + notify/email template editors |
 | Metadata | Read/write per-document key/values | — |
 | Search / chat | Run search, RAG chat | MCP integration config, model/admin settings |
-| Profile / auth | Handled by the **session bridge**, not shipped as components | 2FA policy, user provisioning |
+| Profile / auth | Handled by **session support** (§6: FileEngine-side + client-direct; no mandatory server), not shipped as components | 2FA policy, user provisioning |
 | Integration credentials | (nothing) | Generate/manage inter-server integration keys — System config → *Integrations* (§14.1) |
 | Space/project provisioning | (nothing — end users operate *within* provisioned spaces) | Templates + apply, via the integration credential (config service, §14.7) |
 
