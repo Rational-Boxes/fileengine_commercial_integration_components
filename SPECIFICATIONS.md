@@ -242,14 +242,17 @@ assumes a genuinely shared source-of-truth (shared provisioning, tenanting, and
 role governance), which is an infrastructure commitment. The kit supports both
 postures; §5.1 is the portable default, §5.2 is the tight-integration tier.
 
-**Deployment-wide, multi-tenant.** In Posture B a FileEngine **deployment is bespoke**
-to a stack of external application deployments. The integration credential is
-**deployment-wide** (not per-tenant), and the external system(s) **spin up many
-tenants dynamically** — a fully-integrated tenant provision per tenant: the external
-app creates the tenant's OU in the shared LDAP, then the provisioning surface (§14.7)
-adopts it and stands up its spaces/automation/resources. So `allowed_tenants` is
-typically the whole deployment, and provisioning validates each tenant against LDAP
-as it is encountered rather than from a fixed enumerated list.
+**Bespoke deployment per external SaaS (deployment policy).** FileEngine embedding is
+**not offered on a shared, generic multi-tenant instance.** Each external SaaS that
+leverages FileEngine gets its **own bespoke deployment** — dedicated to that
+integrator, and itself multi-tenant across *that SaaS's* tenants. So a deployment
+serves **one integration** (its external-app stack), which is **deployment-wide** (not
+per-tenant) and **spins up many tenants dynamically**: the external app creates each
+tenant's OU in the shared LDAP, then the provisioning surface (§14.7) adopts it and
+stands up its spaces/automation/resources. `allowed_tenants` is therefore the whole
+deployment, and provisioning validates each tenant against LDAP as it is encountered
+rather than from a fixed enumerated list. (Per-integration namespacing, §14.1, is kept
+for robustness even though a deployment normally has a single integration.)
 
 ### 5.1 Default profile — popup OAuth, token in browser, direct-to-service
 
