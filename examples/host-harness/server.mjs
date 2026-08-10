@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, normalize } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+// Serve the real embed-core ESM straight from the monorepo so manual E2E exercises
+// the actual kit (SessionManager/connect/API_REST), not a reimplementation.
+const CORE_DIR = normalize(join(HERE, '..', '..', 'packages', 'core', 'src'))
 const env = process.env
 const PORT = Number(env.HARNESS_PORT || 8181)
 const PUBLIC_ORIGIN = env.HARNESS_PUBLIC_ORIGIN || `http://localhost:${PORT}`
@@ -69,6 +72,19 @@ const server = createServer(async (req, res) => {
       error: 'not_implemented',
       detail: 'Wire FE_INTEGRATION_PRIVATE_KEY + POST FileEngine /v1/auth/exchange when §14.2 lands.',
     }), 'application/json')
+  }
+
+  // /core/<file> -> the real @fileengine/embed-core source (ESM modules).
+  if (path.startsWith('/core/')) {
+    const coreFile = normalize(join(CORE_DIR, path.slice('/core/'.length)))
+    if (!coreFile.startsWith(CORE_DIR)) return send(res, 403, 'forbidden') // path escape
+    try {
+      const body = await readFile(coreFile)
+      const ext = coreFile.slice(coreFile.lastIndexOf('.'))
+      return send(res, 200, body, MIME[ext] || 'application/octet-stream')
+    } catch {
+      return send(res, 404, 'not found')
+    }
   }
 
   // static: / -> index.html, else public/<file>

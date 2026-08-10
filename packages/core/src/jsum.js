@@ -8,24 +8,32 @@
 const hydration = {};
 const cache = {};
 
-const observer = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-        if (entry.isIntersecting) {
-            const el = entry.target;
-            if (el.id && hydration[el.id] === false) {
-                hydration[el.id] = true;
-                if ('_start' in el) {
-                    el._start.bind(el)();
+// Created lazily on first use so importing this module does not require a browser
+// (IntersectionObserver is undefined under Node/SSR/tests). Behavior in the browser
+// is unchanged — the observer is built the first time hydration is initialized.
+let observer = null;
+const get_observer = () => {
+    if (observer) return observer;
+    observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const el = entry.target;
+                if (el.id && hydration[el.id] === false) {
+                    hydration[el.id] = true;
+                    if ('_start' in el) {
+                        el._start.bind(el)();
+                    }
+                    observer.unobserve(el);
                 }
-                observer.unobserve(el);
             }
-        }
+        });
+    }, {
+        root: null, // Use the viewport as the root
+        rootMargin: '0px',
+        threshold: 0.1 // Trigger when at least 10% of the target is visible
     });
-}, {
-    root: null, // Use the viewport as the root
-    rootMargin: '0px',
-    threshold: 0.1 // Trigger when at least 10% of the target is visible
-});
+    return observer;
+}
 
 /**
  * Start the component hydration support.
@@ -38,7 +46,7 @@ const init_hydration_lifecycle = () => {
     const els_components = document.querySelectorAll("[jsum]");
     for (const el_component of els_components) {
         hydration[el_component.id] = false;
-        observer.observe(el_component);
+        get_observer().observe(el_component);
     }
 }
 

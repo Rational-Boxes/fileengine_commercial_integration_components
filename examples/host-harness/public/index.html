@@ -57,54 +57,54 @@
 </main>
 
 <script type="module">
+// Import the REAL embed-core straight from the monorepo (served at /core/*), so this
+// harness exercises the actual kit — SessionManager (§5.1 popup-OAuth) + connect()
+// (§6.2 401->refresh->replay) — rather than a reimplementation.
+import { SessionManager, connect } from '/core/index.js'
+
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
-let cfg = null, token = null, popup = null
 
-const cfgRes = await fetch('/config'); cfg = await cfgRes.json()
+const cfgRes = await fetch('/config'); const cfg = await cfgRes.json()
 document.getElementById('cfg').textContent = JSON.stringify(cfg, null, 2)
 document.getElementById('profilePill').textContent = 'profile: ' + cfg.profile
 document.getElementById('tenantPill').textContent = 'tenant: ' + (cfg.tenant || '(unset)')
 
-function setSession(t) {
-  token = t
-  document.getElementById('sessionPill').textContent = 'session: ' + (t ? 'active' : 'none')
-}
-
-// Popup-OAuth (§5.1): open the FileEngine OAuth start with return_to = our callback,
-// capture the token via postMessage from the callback page.
-document.getElementById('signin').onclick = () => {
-  const ret = cfg.publicOrigin + cfg.callbackPath
-  const url = new URL(cfg.fileengine.api + '/v1/auth/oauth/' + cfg.oauthProvider)
-  url.searchParams.set('return_to', ret)
-  url.searchParams.set('state', crypto.randomUUID())
-  popup = window.open(url, 'fe-signin', 'width=520,height=640')
-  out('Opened OAuth popup → ' + url)
-}
-window.addEventListener('message', (e) => {
-  if (e.origin !== cfg.publicOrigin) return          // pin origin
-  if (e.data && e.data.source === 'fe-oauth' && e.data.token) {
-    setSession(e.data.token)
-    out({ captured: 'token', expires_in: e.data.expires_in })
-    if (popup) popup.close()
-  }
+const session = new SessionManager({
+  bridgeBase: cfg.fileengine.api,
+  oauthProvider: cfg.oauthProvider,
+  callbackUrl: cfg.publicOrigin + cfg.callbackPath,
+  hostOrigin: cfg.publicOrigin,           // only postMessages from our own origin are trusted
 })
+session.onChange((t) =>
+  document.getElementById('sessionPill').textContent = 'session: ' + (t ? 'active' : 'none'))
 
-async function call(path) {
-  if (!token) return out('sign in first')
-  try {
-    const r = await fetch(cfg.fileengine.api + path, {
-      headers: { Authorization: 'Bearer ' + token, ...(cfg.tenant ? { 'X-Tenant': cfg.tenant } : {}) },
-    })
-    out({ status: r.status, body: await r.json().catch(() => '(non-json)') })
-  } catch (err) { out('fetch failed (CORS not allowing this origin?): ' + err) }
+// One connected client: bearer tracks the session; a 401 auto-refreshes + replays.
+const api = connect(session, { host_url: cfg.fileengine.api, on_error: (e) => out('api error: ' + e) })
+
+document.getElementById('signin').onclick = async () => {
+  out('Opening OAuth popup…')
+  try { await session.login(); out({ signedIn: true, ms_to_expiry: session.msUntilExpiry() }) }
+  catch (err) { out('sign-in failed: ' + err.message) }
+}
+
+// Smoke tests go through the real API_REST client to prove token + CORS + reauth.
+function call(path, verb = 'get') {
+  if (!session.hasSession()) return out('sign in first')
+  const headers = cfg.tenant ? { 'X-Tenant': cfg.tenant } : {}
+  api.define_endpoint(path, (payload) => out({ path, body: payload }), verb)
+  const started = api.call(path, verb, undefined, headers)
+  if (!started) out(path + ': identical request already in flight')
 }
 document.getElementById('whoami').onclick = () => call('/v1/whoami')
 document.getElementById('tenants').onclick = () => call('/v1/tenants')
-document.getElementById('refresh').onclick = () => call('/v1/auth/refresh')
-document.getElementById('logout').onclick = () => { setSession(null); out('cleared') }
+document.getElementById('refresh').onclick = async () => {
+  try { await session.refresh(); out({ refreshed: true, ms_to_expiry: session.msUntilExpiry() }) }
+  catch (err) { out('refresh failed: ' + err.message) }
+}
+document.getElementById('logout').onclick = () => { session.logout(); out('cleared') }
 
-// TODO(M0/M1): import cfg.modules from cfg.kitBase and mount <fe-session> + <fe-*>.
+// TODO(M1): import cfg.modules from cfg.kitBase and mount <fe-session> + <fe-*>.
 </script>
 </body>
 </html>
