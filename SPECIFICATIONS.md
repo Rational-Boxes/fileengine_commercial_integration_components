@@ -358,6 +358,10 @@ service. This is the single, authoritative access lever for browser-origin acces
   `Content-Type`, `Range`, `X-Tenant`.
 - Never `*`. Each embedding domain is named explicitly; adding/removing an embed is
   a FileEngine-side config change, giving the operator a clean audit + kill-switch.
+- **Centralized management:** the allow-lists are not hand-maintained per service —
+  the **integration management CLI (§14.9)** derives them from each integration's
+  registered `domains`, keeping "who's registered" and "who's CORS-allowed" consistent
+  by construction (and closing domains automatically on revoke).
 
 ### 5.5 Deep-link SSO into the official FileEngine client (no repeated login)
 
@@ -776,6 +780,10 @@ entry:
   namespace the tenant-scoped resources the integration provisions (classifier sets,
   notify templates, …) so two integrations never collide on a shared name. Carried in
   the integration-service token as `prov_namespace`; authoritative, not caller-settable.
+- **`domains`** — the embedding **origin(s)** (scheme+host+port) this integration
+  serves from. These are the source of truth for the browser-origin **CORS allow-lists**
+  (§5.4): the management CLI (§14.9) turns them into each browser-facing service's
+  allow-list. Optionally per-service/module, matching the integration's enabled modules.
 - `enabled`, `created/rotated_at`, audit metadata.
 
 ### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
@@ -852,9 +860,11 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
 - **Integration registry = deployment config** (config files: public keys + scopes),
   provisioned via the management CLI / Ansible and loaded by `http_bridge` — not a
   runtime DB/UI (§14.1).
-- **Deployment management CLI (operator):** allocate/register/rotate/revoke
-  integration credentials + scopes/namespace for the whole deployment/cluster (backed
-  by the ldap_manager registry) — **not** a tenant-admin UI (§14.1).
+- **Integration management CLI (operator, `scripts` deploy repo):** import public
+  keys, allocate/rotate/revoke credentials, set scopes/namespace/domains, **and
+  centralize the CORS allow-lists** across browser-facing services from each
+  integration's `domains` — writing deployment config, rolled out via Ansible (§14.9).
+  Not a tenant-admin UI.
 - **Official SPA (AGPL client):** **read-only** integration status/usage and honoring
   the `managed_by` marker (§14a); it does **not** allocate credentials. (Provisioning
   blueprints are inline, not stored — no template editor; see the
@@ -1054,3 +1064,45 @@ provisioning surface (inline blueprints, version-on-metadata; the
 `fileengine_integration_provisioning` project) (§14.7). The multi-origin CORS allow-list
 (§14.6) is a prerequisite for any real embed and ships with them. Deep-link SSO
 (§5.5 / §14.6) remains M5 unless pulled forward.
+
+### 14.9 Integration management CLI (deployment/operator) — integrations + CORS
+
+A single **operator CLI** is the authoritative place to manage integrations **and**
+the embedding-domain **CORS allow-lists** they imply. It is **deployment tooling**
+(lives in the `scripts` deploy repo, run by whoever operates the cluster — the same
+trust level as deploying the stack), not the MIT embed kit and not a tenant UI. It
+writes/maintains the **deployment config** (public keys, scopes, CORS) that the
+services load, and rolls it out via Ansible. It backs the §14.1 registry.
+
+**Integration management:**
+- `fe-int add <integration_id> --pubkey <pem|jwks> [--kid <id>] --namespace <prefix>
+  --capabilities session,provisioning [--tenants '*'|<pattern>] [--roots <path,…>]
+  [--role-cap <…>] [--actions <…>] [--resources <…>] --domains <origin,…>` —
+  **import the external system's public key** (§14.1; never a private key), set
+  scopes/namespace, and its embedding **domains**.
+- `fe-int list | show <id> | enable <id> | disable <id> | revoke <id>` — lifecycle.
+  `revoke` removes the public key ⇒ closes **both** provisioning and session at once
+  (§14.2) and drops the integration's domains from CORS.
+- `fe-int rotate <id> --add-key <pem> --kid <new> [--retire <old-kid>]` — key
+  rotation with an overlap window.
+
+**CORS centralization (the payoff):**
+- Each integration declares its embedding `domains` (§14.1); the CLI is the **one
+  place** that turns those into the per-service CORS allow-lists — no hand-editing N
+  service configs, no drift between "who's registered" and "who's allowed".
+- `fe-int cors sync` recomputes every **browser-facing** service's allow-list —
+  `HTTP_CORS_ORIGINS` (http_bridge) + `CSAI_CORS_ORIGINS` / `DISC_CORS_ORIGINS` /
+  `BCF_CORS_ORIGINS` / `FA_CORS_ORIGINS` — as the **union of enabled integrations'
+  domains**, scoped to the services/modules each integration actually uses (§5.4 à la
+  carte). The **provisioning** service (:8100) is server-to-server, not browser-facing,
+  so it is excluded. Never `*`.
+- `fe-int apply` writes the deployment config and triggers the reload/redeploy.
+- Net: registering an integration + its domains is **one** operation that keeps
+  credentials, scopes, and CORS **consistent by construction** — the operator can't
+  forget to open a domain on add, or (critically) to **close** it on revoke.
+
+**Relation to the edge CORS work (§14.6).** The multi-origin `HTTP_CORS_ORIGINS`
+allow-list on http_bridge is the *mechanism*; this CLI is the *management surface* that
+populates it (and the downstream lists) from the integration registry — so §5.4's
+"CORS is strictly FileEngine's responsibility" has a concrete, centralized operator
+workflow.
