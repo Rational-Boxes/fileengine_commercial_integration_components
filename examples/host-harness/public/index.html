@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FileEngine Embed — Host Harness</title>
+<style>
+  :root { --bg:#fff; --fg:#111; --muted:#667; --accent:#2563eb; --border:#e5e7eb; }
+  @media (prefers-color-scheme: dark){ :root{ --bg:#0b0d10; --fg:#e8eaed; --muted:#9aa; --border:#222; } }
+  body { font: 14px/1.5 system-ui, sans-serif; margin:0; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; }
+  main { display:grid; grid-template-columns:340px 1fr; gap:0; min-height:calc(100vh - 52px); }
+  aside { border-right:1px solid var(--border); padding:16px 18px; }
+  section { padding:16px 20px; }
+  .row { margin:10px 0; }
+  label { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:3px; }
+  button { padding:7px 12px; border:1px solid var(--border); border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; font:inherit; }
+  button.ghost { background:transparent; color:var(--fg); }
+  code, pre { background:color-mix(in srgb, var(--fg) 8%, transparent); border-radius:6px; }
+  pre { padding:10px; overflow:auto; max-height:280px; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  #mount { border:1px dashed var(--border); border-radius:10px; padding:24px; color:var(--muted); text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FileEngine Embed — Host Harness</h1>
+  <span class="pill" id="profilePill">profile: …</span>
+  <span class="pill" id="tenantPill">tenant: …</span>
+  <span class="pill" id="sessionPill">session: none</span>
+</header>
+<main>
+  <aside>
+    <div class="row"><label>Session</label>
+      <button id="signin" title="Requires an external OAuth provider configured on the bridge">Sign in (popup OAuth)</button>
+      <button id="refresh" class="ghost">Refresh</button>
+      <button id="logout" class="ghost">Logout</button>
+    </div>
+    <div class="row"><label>Password login (FileEngine LDAP — the “passthrough” profile)</label>
+      <input id="pwUser" placeholder="username (e.g. testuser@rationalboxes.com)" autocomplete="username" />
+      <input id="pwPass" type="password" placeholder="password" autocomplete="current-password" />
+      <button id="pwLogin">Log in</button>
+      <div id="mfaRow" class="row" style="display:none; margin-top:6px;">
+        <input id="mfaCode" placeholder="2FA code" />
+        <button id="mfaVerify" class="ghost">Verify 2FA</button>
+      </div>
+    </div>
+    <div class="row"><label>Delegated exchange (§14.2 — signs a TEST assertion)</label>
+      <input id="delegatedUser" placeholder="delegated username (LDAP uid)" />
+      <button id="exchange">Exchange → session</button>
+    </div>
+    <div class="row"><label>Smoke test (proves token + CORS)</label>
+      <button id="whoami" class="ghost">GET /v1/whoami</button>
+      <button id="tenants" class="ghost">GET /v1/tenants</button>
+    </div>
+    <div class="row"><label>Config (/config)</label>
+      <pre id="cfg">loading…</pre>
+    </div>
+  </aside>
+  <section>
+    <div class="row"><label>Result</label><pre id="out">—</pre></div>
+    <div class="row"><label>Embedded components (à la carte)</label>
+      <div id="mount">
+        <p class="muted">
+          <b>&lt;fe-session&gt;</b> (M1) drives the session; <b>&lt;fe-file-browser&gt;</b> below is a
+          live à la carte component discovering it over the bus. Sign in (or exchange) first, then
+          <b>Load</b>. Clicking a file emits <code>fe:select</code>.
+        </p>
+        <div class="row">
+          <input id="fbFolder" value="root" placeholder="folder uid" />
+          <button id="fbLoad" class="ghost">Load folder</button>
+        </div>
+        <div id="fbHost"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+// Import the REAL embed-core straight from the monorepo (served at /core/*). Importing
+// the barrel registers the <fe-session> custom element (§8), so the harness drives the
+// actual kit end-to-end: <fe-session> -> SessionProvider -> SessionManager + connect().
+import '/core/index.js'
+import '/components/fe-file-browser.js'      // à la carte: registers <fe-file-browser>
+import '/components/fe-document-preview.js'  // à la carte: registers <fe-document-preview>
+import '/components/fe-uploader.js'          // à la carte: registers <fe-uploader>
+import '/components/fe-search.js'            // à la carte: registers <fe-search>
+import '/components/fe-comments.js'          // à la carte: registers <fe-comments> (live WS)
+import '/components/fe-metadata.js'          // à la carte: registers <fe-metadata>
+import '/components/fe-download.js'          // à la carte: registers <fe-download>
+
+const out = (v) => document.getElementById('out').textContent =
+  typeof v === 'string' ? v : JSON.stringify(v, null, 2)
+
+const cfgRes = await fetch('/config'); const cfg = await cfgRes.json()
+document.getElementById('cfg').textContent = JSON.stringify(cfg, null, 2)
+document.getElementById('profilePill').textContent = 'profile: ' + cfg.profile
+document.getElementById('tenantPill').textContent = 'tenant: ' + (cfg.tenant || '(unset)')
+
+// One non-visual <fe-session> provider, configured from /config and mounted into the
+// DOM (connectedCallback builds the SessionProvider). Sibling components would discover
+// it over the JSUM bus; here the host page talks to it directly.
+const feSession = document.createElement('fe-session')
+feSession.setAttribute('base', cfg.fileengine.api)
+feSession.setAttribute('tenant', cfg.tenant || '')
+feSession.setAttribute('oauth-provider', cfg.oauthProvider)
+feSession.setAttribute('host-origin', cfg.publicOrigin)  // only our own origin is trusted
+feSession.setAttribute('callback-url', cfg.publicOrigin + cfg.callbackPath)
+document.body.appendChild(feSession)
+
+const provider = feSession.getSession()
+const session = provider.session
+feSession.addEventListener('fe:session', (e) =>
+  document.getElementById('sessionPill').textContent = 'session: ' + (e.detail.active ? 'active' : 'none'))
+
+// A connected client from the provider: bearer tracks the session; 401 auto-refreshes.
+const api = provider.client()
+
+// Mount a live <fe-file-browser> and hand it the provider explicitly (avoids DOM-order
+// discovery races). It borrows the provider's client; fe:select bubbles up to the host.
+const fb = document.createElement('fe-file-browser')
+fb.provider = provider
+fb.setAttribute('folder', 'root')
+document.getElementById('fbHost').appendChild(fb)
+fb.addEventListener('fe:navigate', (e) => out({ 'fe:navigate': e.detail.uid }))
+document.getElementById('fbLoad').onclick = () => {
+  if (!provider.hasSession()) return out('sign in (or exchange) first')
+  fb.open(document.getElementById('fbFolder').value.trim() || 'root')
+}
+
+// A second à la carte component: preview. Inter-component coordination is loose —
+// the browser emits fe:select (events out), the host routes it to preview.open (methods
+// in). Neither imports the other; both share the one <fe-session> provider.
+const preview = document.createElement('fe-document-preview')
+preview.provider = provider
+document.getElementById('fbHost').appendChild(preview)
+fb.addEventListener('fe:select', (e) => {
+  out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name })
+  // preview/comments/meta/download declared below; closures run on click, after init.
+  preview.open(e.detail.uid)
+  comments.open(e.detail.uid)
+  meta.open(e.detail.uid)
+  download.setAttribute('uid', e.detail.uid)
+})
+preview.addEventListener('fe:preview', (e) =>
+  out({ 'fe:preview': e.detail.uid, rendition: e.detail.preview?.name, kind: e.detail.kind }))
+
+// A third à la carte component: uploader (write path). It targets the folder shown in
+// the input; after a successful upload the host refreshes the browser — again, loose
+// coordination (event out -> method in), no cross-component imports.
+const uploader = document.createElement('fe-uploader')
+uploader.provider = provider
+uploader.setAttribute('folder', 'root')
+document.getElementById('fbHost').appendChild(uploader)
+document.getElementById('fbFolder').addEventListener('input', (e) =>
+  uploader.setAttribute('folder', e.target.value.trim() || 'root'))
+uploader.addEventListener('fe:upload', (e) => {
+  out({ 'fe:upload': e.detail.name, uid: e.detail.uid, folder: e.detail.folder })
+  fb.refresh()  // reflect the new file in the browser
+})
+uploader.addEventListener('fe:upload-error', (e) => out({ 'fe:upload-error': e.detail }))
+
+// A fourth à la carte component: search — on the SEARCH service base (:8092), sharing
+// the one token. A chosen hit emits fe:result-select, which the host routes to the same
+// preview.open(uid) as fe:select — two producers, one consumer, no cross-imports.
+const search = document.createElement('fe-search')
+search.provider = provider
+search.setAttribute('endpoint', cfg.fileengine.csai)
+search.setAttribute('placeholder', 'Search files…')
+document.getElementById('fbHost').appendChild(search)
+search.addEventListener('fe:result-select', (e) => {
+  out({ 'fe:result-select': e.detail.uid, name: e.detail.name })
+  preview.open(e.detail.uid)
+  comments.open(e.detail.uid)
+  meta.open(e.detail.uid)
+  download.setAttribute('uid', e.detail.uid)
+})
+
+// A fifth à la carte component: comments — live over a WebSocket to the discussion
+// service (:8094). Selecting a file (from the browser or search) opens its thread; new
+// comments arrive live. The WS companion is vended by <fe-session>, not imported here.
+const comments = document.createElement('fe-comments')
+comments.provider = provider
+comments.setAttribute('endpoint', cfg.fileengine.discuss)
+document.getElementById('fbHost').appendChild(comments)
+comments.addEventListener('fe:comment', (e) => out({ 'fe:comment': e.detail.uid, body: e.detail.body }))
+
+// Metadata editor + download button, both keyed to the selected file (nodes for
+// metadata, files for content). Same loose coordination — no cross-component imports.
+const meta = document.createElement('fe-metadata')
+meta.provider = provider
+document.getElementById('fbHost').appendChild(meta)
+meta.addEventListener('fe:metadata-change', (e) => out({ 'fe:metadata-change': e.detail }))
+
+const download = document.createElement('fe-download')
+download.provider = provider
+download.setAttribute('label', 'Download selected')
+document.getElementById('fbHost').appendChild(download)
+download.addEventListener('fe:download', (e) => out({ 'fe:download': e.detail.filename }))
+download.addEventListener('fe:download-error', (e) => out({ 'fe:download-error': e.detail }))
+
+document.getElementById('signin').onclick = async () => {
+  out('Opening OAuth popup… (needs an external OAuth provider configured on the bridge)')
+  try { await session.login(); out({ signedIn: true, ms_to_expiry: session.msUntilExpiry() }) }
+  catch (err) { out('sign-in failed: ' + err.message) }
+}
+
+// --- Password login (FileEngine LDAP; the "passthrough" profile) ------------
+// POST /v1/auth/token with HTTP Basic → a bridge session token. If the tenant/user
+// requires 2FA, the bridge returns an mfa challenge; complete it via /v1/auth/2fa.
+const tenantHeaders = () => (cfg.tenant ? { 'X-Tenant': cfg.tenant } : {})
+let pendingMfa = null   // { mfa_token, method }
+
+document.getElementById('pwLogin').onclick = async () => {
+  const user = document.getElementById('pwUser').value.trim()
+  const pass = document.getElementById('pwPass').value
+  if (!user || !pass) return out('enter a username and password')
+  out('Logging in ' + user + '…')
+  document.getElementById('mfaRow').style.display = 'none'
+  try {
+    const r = await fetch(cfg.fileengine.api + '/v1/auth/token', {
+      method: 'POST',
+      headers: { Authorization: 'Basic ' + btoa(user + ':' + pass), ...tenantHeaders() },
+    })
+    const body = await r.json().catch(() => ({}))
+    if (r.ok && body.token) {
+      session.setSession(body.token, body.expires_in)
+      out({ loggedIn: true, user, expires_in: body.expires_in })
+    } else if (r.ok && body.mfa_required) {
+      pendingMfa = { mfa_token: body.mfa_token, method: (body.methods || ['totp'])[0] }
+      document.getElementById('mfaRow').style.display = ''
+      out({ mfa_required: true, methods: body.methods, note: 'enter your ' + pendingMfa.method + ' code below' })
+    } else {
+      out({ status: r.status, error: body })
+    }
+  } catch (err) { out('login failed (CORS not allowing this origin?): ' + err.message) }
+}
+
+document.getElementById('mfaVerify').onclick = async () => {
+  if (!pendingMfa) return out('start a login first')
+  const code = document.getElementById('mfaCode').value.trim()
+  if (!code) return out('enter the 2FA code')
+  try {
+    const r = await fetch(cfg.fileengine.api + '/v1/auth/2fa', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...tenantHeaders() },
+      body: JSON.stringify({ mfa_token: pendingMfa.mfa_token, method: pendingMfa.method, code }),
+    })
+    const body = await r.json().catch(() => ({}))
+    if (r.ok && body.token) {
+      session.setSession(body.token, body.expires_in)
+      pendingMfa = null
+      document.getElementById('mfaRow').style.display = 'none'
+      out({ loggedIn: true, via: '2fa', expires_in: body.expires_in })
+    } else {
+      out({ status: r.status, error: body })
+    }
+  } catch (err) { out('2FA failed: ' + err.message) }
+}
+
+// Smoke tests go through the real API_REST client to prove token + CORS + reauth.
+function call(path, verb = 'get') {
+  if (!session.hasSession()) return out('sign in first')
+  const headers = cfg.tenant ? { 'X-Tenant': cfg.tenant } : {}
+  api.define_endpoint(path, (payload) => out({ path, body: payload }), verb)
+  const started = api.call(path, verb, undefined, headers)
+  if (!started) out(path + ': identical request already in flight')
+}
+document.getElementById('whoami').onclick = () => call('/v1/whoami')
+document.getElementById('tenants').onclick = () => call('/v1/tenants')
+document.getElementById('refresh').onclick = async () => {
+  try { await session.refresh(); out({ refreshed: true, ms_to_expiry: session.msUntilExpiry() }) }
+  catch (err) { out('refresh failed: ' + err.message) }
+}
+document.getElementById('logout').onclick = () => { session.logout(); out('cleared') }
+
+// Delegated exchange: the harness signs a TEST assertion for the given user and relays
+// FileEngine /v1/auth/exchange; on success the minted token becomes the live session.
+document.getElementById('exchange').onclick = async () => {
+  const sub = document.getElementById('delegatedUser').value.trim()
+  if (!sub) return out('enter a delegated username first')
+  out('Exchanging assertion for ' + sub + '…')
+  try {
+    const r = await fetch('/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sub, tenant: cfg.tenant || undefined }),
+    })
+    const body = await r.json().catch(() => ({}))
+    if (r.ok && body.access_token) {
+      session.setSession(body.access_token, body.expires_in)  // fires onChange → bearer armed
+      out({ exchanged: true, sub, expires_in: body.expires_in })
+    } else {
+      out({ status: r.status, error: body })
+    }
+  } catch (err) { out('exchange failed: ' + err.message) }
+}
+
+// TODO(M1): import cfg.modules from cfg.kitBase and mount <fe-session> + <fe-*>.
+</script>
+</body>
+</html>

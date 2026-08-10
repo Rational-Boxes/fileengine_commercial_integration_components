@@ -1,0 +1,21 @@
+{
+  "name": "@fileengine/embed-components",
+  "version": "0.1.0",
+  "description": "FileEngine embedding kit — à la carte visual Web Components (<fe-file-browser>, …). Each is an independent ES module that discovers <fe-session> at runtime and imports no other component.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./file-browser": "./src/fe-file-browser.js",
+    "./document-preview": "./src/fe-document-preview.js",
+    "./uploader": "./src/fe-uploader.js",
+    "./search": "./src/fe-search.js",
+    "./comments": "./src/fe-comments.js",
+    "./metadata": "./src/fe-metadata.js",
+    "./download": "./src/fe-download.js"
+  },
+  "files": ["src"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": { "node": ">=20" }
+}
