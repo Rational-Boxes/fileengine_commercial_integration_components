@@ -619,8 +619,10 @@ onMounted(() => {
   bearer-in-fragment fallback except HTTPS-only with immediate strip.
 - CORS is an explicit FileEngine-side allow-list of embedding domains, never `*`
   (§5.4); adding/removing an embed is an auditable operator config change.
-- Trusted-issuer profile treated as an **impersonation key**: guarded env,
-  audited mints, short TTL, never shipped to the browser.
+- Delegated exchange holds **no impersonation secret**: FileEngine stores only the
+  integration's imported **public** key (§14.1), the global `FILEENGINE_JWT_SECRET`
+  is never distributed, the private key stays with the external system, and every
+  mint is audited (§14.3) with short-TTL tokens.
 - Module gating is attack-surface reduction, not authorization — ACLs/roles in
   the JWT remain the security boundary.
 - Respect the core's soft-delete/versioning semantics; destructive ops
@@ -709,8 +711,10 @@ forward.
 
 ## 14. Upstream FileEngine additions (proposal) — delegated session exchange
 
-This is a **proposal for the core FileEngine stack** (http_bridge + ldap_manager),
-not the embed kit itself. It is the prerequisite for the delegated silent-session
+This is a **proposal for the core FileEngine stack** (http_bridge exchange +
+deployment-config registry + management CLI + official-SPA read-only status; role
+lifecycle still via ldap_manager/LDAP), not the embed kit itself. It is the
+prerequisite for the delegated silent-session
 profile (§5.2) and the "tight integration" headline. It is additive and does not
 change existing auth. Applies to **Posture B** integrators (§5.0) with a shared
 LDAP source-of-truth.
@@ -739,7 +743,8 @@ its narrow existing uses, not for embedding integrations.)
 integrations are **deployment-wide** (§5.0) and bespoke to the deployment's
 external-app stack, allocating/rotating/revoking a credential is an **operator-level**
 action performed with a **management CLI for the whole deployment/cluster** (backed by
-the ldap_manager registry), **not** a tenant-admin SPA screen. The CLI:
+the deployment-config registry — public keys + scopes, below), **not** a tenant-admin
+SPA screen. The CLI:
 - **Imports the external system's public key (mandatory).** Integration configuration
   **MUST import the external system's public key / JWKS**: the external system
   generates and **holds its own keypair**, and FileEngine only ever receives the
@@ -1000,14 +1005,10 @@ An admin-authored, versioned template describes a desired subtree. Bound to
 - `DELETE /v1/provisioning/spaces/{space_uid}` — **soft-delete** (scope-checked,
   honors the core's recoverable-delete + versioning); optional, off by default.
 
-**Templates (admin — official SPA):**
-- `GET /v1/provisioning/templates` — list (an integration sees only the templates
-  its `provisioning_scope` permits).
-- `GET /v1/provisioning/templates/{id}` — fetch (+ versions).
-- `POST /v1/provisioning/templates` · `PUT /v1/provisioning/templates/{id}` — create
-  / new version (admin only; edited in the SPA *Integrations/Provisioning* section).
-- `DELETE /v1/provisioning/templates/{id}` — retire (existing spaces keep their
-  applied version).
+**Templates:** *superseded* — the dedicated project has **no stored template store /
+template CRUD** (see the banner above); blueprints are passed inline per call and
+versioning is stamped on the space root metadata. The `/v1/provisioning/templates`
+endpoints once sketched here do **not** exist in the authoritative design.
 
 #### 14.7.3 Apply semantics (idempotency, reconciliation, transactions)
 - **Idempotent by `external_id`.** First apply creates; subsequent applies reconcile
@@ -1050,12 +1051,12 @@ convenience "ensure these role bindings exist" hook may be considered later, but
 role lifecycle is out of the provisioning surface's V1 remit.)
 
 #### 14.7.7 Home / implementation
-Templates + apply orchestration live in the **config service (ldap_manager) + core**;
-all folder/ACL/metadata writes go through the **core** (so existing ACL, versioning,
-audit, and tenancy invariants hold unchanged). The **template editor** is an admin
-surface in the official SPA (alongside the §14.1 *Integrations* UI), never the embed
-kit. The composable primitives (`POST /v1/dirs/{uid}`, `POST /v1/nodes/{uid}/permissions`)
-remain available to an in-scope integration token for bespoke needs, but templates
+Apply orchestration lives in the **dedicated `fileengine_integration_provisioning`
+service (AGPL, :8100)**; all folder/ACL/metadata writes go through the **core** (so
+existing ACL, versioning, audit, and tenancy invariants hold unchanged). *(Superseded
+detail: there is no stored-template editor — blueprints are inline, §14.7 banner.)*
+The composable primitives (`POST /v1/dirs/{uid}`, `POST /v1/nodes/{uid}/permissions`)
+remain available to an in-scope integration token for bespoke needs, but blueprints
 are the intended, auditable path.
 
 ### 14.8 V1 scope note
