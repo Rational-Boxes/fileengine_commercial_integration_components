@@ -534,7 +534,8 @@ forward.
      register key, scopes, rotate/revoke) — §14.1.
    - `POST /v1/auth/exchange` for **delegated-user** *and* **integration-service**
      tokens — §14.2; `auth.delegated_issue` audit.
-   - **Provisioning surface** + space templates + template editor — §14.7;
+   - **Provisioning surface** (inline blueprints, version-on-metadata) — §14.7 /
+     the `fileengine_integration_provisioning` project;
      `provisioning.*` audit.
    - **Multi-origin CORS allow-list** on `http_bridge` — §14.6.
    - Bridge `delegated` profile + `SessionManager` silent path.
@@ -681,7 +682,8 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
   template store + apply/reconcile orchestration (§14.7).
 - **Official SPA (AGPL client):** new **System configuration → Integrations**
   section — generate/register credential, configure scopes (session + provisioning),
-  rotate/revoke, view usage; plus the **provisioning template editor**.
+  rotate/revoke, view usage. (Provisioning blueprints are inline, not stored —
+  no template editor; see the `fileengine_integration_provisioning` project.)
 - `http_bridge`: `/v1/auth/exchange` (delegated-user **and** integration-service
   tokens) + assertion verification (extend `jwt.h` with RS256/ES256 verify + JWKS)
   + delegation/integration claims in `mintJwt`; multi-origin CORS allow-list (§14.6).
@@ -724,6 +726,19 @@ owners, roles, ACLs, and metadata already applied — so end users then simply
 operate within correctly-permissioned spaces (§2.1). Called with an **integration
 service token** (§14.2, `provisioning` capability) by the integrator's backend;
 **never** exposed to the browser or the embed kit. Base path `/v1/provisioning`.
+
+> **Authoritative spec: the dedicated `fileengine_integration_provisioning`
+> project** (AGPL FastAPI service, port `8100`). The sketch below is retained as
+> orientation; that project supersedes it and has refined the model. Key deltas to
+> read there: (1) **no stored template library** — the integration endpoint accepts
+> a **rich inline JSON blueprint** per call (blueprints live in the integrator's
+> system); (2) **versioning is stamped on the space root folder metadata**
+> (`provision.version` …) for the embedder to inspect, and **upgrade is the embedding
+> application's responsibility** (inspect → re-apply); (3) blueprints include
+> **per-space automation** (`actions`) whose folder references use `${node:<path>}`
+> resolved to the space's fresh UUIDs (folder_actions bindings can't be cloned by
+> UUID); (4) a **per-space setup API** to tune automation (webhook context maps,
+> notify recipients, secrets) post-provision.
 
 Design principles: **declarative** (describe the desired space, don't script
 mkdir/grant), **idempotent + reconcilable** (safe to re-apply on every "new
@@ -853,6 +868,7 @@ are the intended, auditable path.
 Per the V1 goals (§12), the following upstream items are **committed for V1**, not
 deferred: the integration registry + SPA *Integrations* credential UI (§14.1), the
 delegated exchange endpoint incl. the integration service token (§14.2), and the
-provisioning surface + space templates (§14.7). The multi-origin CORS allow-list
+provisioning surface (inline blueprints, version-on-metadata; the
+`fileengine_integration_provisioning` project) (§14.7). The multi-origin CORS allow-list
 (§14.6) is a prerequisite for any real embed and ships with them. Deep-link SSO
 (§5.5 / §14.6) remains M5 unless pulled forward.
