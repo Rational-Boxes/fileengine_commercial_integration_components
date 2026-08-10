@@ -43,7 +43,7 @@ end-user half; the official client keeps the governance half:
 | Metadata | Read/write per-document key/values | — |
 | Search / chat | Run search, RAG chat | MCP integration config, model/admin settings |
 | Profile / auth | Handled by **session support** (§6: FileEngine-side + client-direct; no mandatory server), not shipped as components | 2FA policy, user provisioning |
-| Integration credentials | (nothing) | Generate/manage inter-server integration keys — System config → *Integrations* (§14.1) |
+| Integration credentials | (nothing) | Allocated by a **deployment/cluster management CLI** (operator, deployment-level config); the SPA shows read-only status only (§14.1) |
 | Space/project provisioning | (nothing — end users operate *within* provisioned spaces) | Templates + apply, via the integration credential (config service, §14.7) |
 
 Non-goals: no tenant administration, no user/role management, no audit/security
@@ -241,6 +241,15 @@ Posture B is a **stronger prerequisite than "point at the same LDAP host"** — 
 assumes a genuinely shared source-of-truth (shared provisioning, tenanting, and
 role governance), which is an infrastructure commitment. The kit supports both
 postures; §5.1 is the portable default, §5.2 is the tight-integration tier.
+
+**Deployment-wide, multi-tenant.** In Posture B a FileEngine **deployment is bespoke**
+to a stack of external application deployments. The integration credential is
+**deployment-wide** (not per-tenant), and the external system(s) **spin up many
+tenants dynamically** — a fully-integrated tenant provision per tenant: the external
+app creates the tenant's OU in the shared LDAP, then the provisioning surface (§14.7)
+adopts it and stands up its spaces/automation/resources. So `allowed_tenants` is
+typically the whole deployment, and provisioning validates each tenant against LDAP
+as it is encountered rather than from a fixed enumerated list.
 
 ### 5.1 Default profile — popup OAuth, token in browser, direct-to-service
 
@@ -643,8 +652,9 @@ forward.
    versions, metadata, download, grouped `<fe-document-drawer>`. First usable release.
 3. **M-U — Inter-server integration (upstream FileEngine) — V1.** Parallelizable
    with M0/M1. Deliver §14 end-to-end:
-   - Integration **registry** + **SPA *Integrations* credential UI** (generate/
-     register key, scopes, rotate/revoke) — §14.1.
+   - Integration **registry** (deployment config: public keys + scopes) + a
+     **deployment/cluster management CLI** to allocate/rotate/revoke; SPA read-only
+     status only — §14.1.
    - `POST /v1/auth/exchange` for **delegated-user** *and* **integration-service**
      tokens — §14.2; `auth.delegated_issue` audit.
    - **Provisioning surface** (inline blueprints, version-on-metadata) — §14.7 /
@@ -698,32 +708,48 @@ profile (§5.2) and the "tight integration" headline. It is additive and does no
 change existing auth. Applies to **Posture B** integrators (§5.0) with a shared
 LDAP source-of-truth.
 
-### 14.1 Integration registry + credential UI (admin — official SPA + ldap_manager) — **V1**
+### 14.1 Integration registry + management CLI (deployment-operator) — **V1**
 
-An **inter-server integration credential** is a first-class, admin-managed identity
-representing a whole embedding application (not a user). It is **dual-purpose**:
-it can (a) mint delegated end-user sessions (§14.2) and (b) call the provisioning
-surface (§14.7) to stand up the directory structure that application needs. Both
-capabilities and their scopes are declared on the registry entry.
+An **inter-server integration credential** is a first-class identity representing a
+whole embedding application (not a user). It is **dual-purpose**: it can (a) mint
+delegated end-user sessions (§14.2) and (b) call the provisioning surface (§14.7) to
+stand up the structures that application needs. Both capabilities and their scopes
+are declared on the registry entry.
 
-**System-configuration UI (official SPA, admin-only).** A new *Integrations*
-section under System configuration to **generate and manage** integration
-credentials — consistent with the boundary (this is administrative, so it lives in
-the official client, never the embed kit). It supports:
-- **Create / generate.** Either register the integrator's **public key / JWKS**
-  (preferred — private key never touches FileEngine) *or* generate an asymmetric
-  keypair server-side and reveal the **private key once** for the integrator to
-  copy (convenience; never persisted). "API key generation" in the admin sense.
-- **Scope configuration** (below, incl. the **`namespace` prefix** bound to the
-  credential at creation), **enable/disable**, **rotate** (add a new `kid`, overlap
-  window, retire old), **revoke**, and view **usage/audit**.
+**Allocation is a deployment/cluster operation, not a tenant-admin UI.** Because
+integrations are **deployment-wide** (§5.0) and bespoke to the deployment's
+external-app stack, allocating/rotating/revoking a credential is an **operator-level**
+action performed with a **management CLI for the whole deployment/cluster** (backed by
+the ldap_manager registry), **not** a tenant-admin SPA screen. The CLI:
+- **Creates / generates.** Register the integrator's **public key / JWKS** (preferred
+  — the private key never touches FileEngine) *or* generate an asymmetric keypair and
+  print the **private key once** (never persisted).
+- **Configures scope** — the `namespace` prefix (§14.1 fields), capabilities,
+  tenants, roots, role/action/resource limits — and **rotates** (new `kid`, overlap,
+  retire), **enable/disable**, **revoke**.
+- Run by whoever operates the deployment (same trust level as deploying the stack).
 
-**Registry entry (server-side, ldap_manager):**
+**Official SPA — read-only visibility only.** The SPA does **not** allocate
+credentials; it may surface **read-only** integration status/usage and, crucially,
+honor the `managed_by` marker (§14a) so a tenant admin can see *which* integration
+manages a space/binding. Creation stays operator/CLI.
+
+**Registry = deployment-level configuration (config files), not a runtime UI DB.**
+The integration entries — **public-key storage** and scopes — are **deployment
+configuration** provisioned at deploy time (the management CLI / Ansible writes them
+into the deployment's config, alongside the other service config), and **loaded by
+the services that need them** (chiefly `http_bridge` for assertion verification +
+scope minting at §14.2). This suits deployment-wide, bespoke integrations and keeps
+public keys in the operator's config management, not a tenant-editable store. Each
+entry:
 - `integration_id` (issuer identifier used in the assertion `iss`).
-- **Public key(s) / JWKS** by `kid` (asymmetric; RSA-2048+/EC-P256). FileEngine
-  stores only public keys — never anything forge-capable.
+- **Public key(s) / JWKS** by `kid` (asymmetric; RSA-2048+/EC-P256) — stored in
+  deployment config; FileEngine holds only public keys, never anything forge-capable.
 - **`capabilities`** — any of `session_exchange`, `provisioning`.
-- `allowed_tenants` — the tenant(s) this integration operates in.
+- `allowed_tenants` — typically **deployment-wide (all tenants)**: an integration is
+  deployment-scoped and spins up tenants **dynamically**, so this defaults to any
+  tenant (a pattern may sub-scope). The deployment is bespoke to the integration's
+  external-app stack (§5.0).
 - `subject_scope` — which subjects it may assert for session exchange (e.g. any
   member of an allowed tenant; optionally restricted to a subtree/filter). Unknown
   subject ⇒ reject (pre-provisioned only, v1).
@@ -796,13 +822,16 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
   integration — the assertion names a *subject*, not its privileges.
 
 ### 14.5 Effort / touch points (upstream)
-- `ldap_manager`: integration **registry** model + admin routes + rotation/
-  revocation (mirrors existing service-credential machinery); **provisioning**
-  template store + apply/reconcile orchestration (§14.7).
-- **Official SPA (AGPL client):** new **System configuration → Integrations**
-  section — generate/register credential, configure scopes (session + provisioning),
-  rotate/revoke, view usage. (Provisioning blueprints are inline, not stored —
-  no template editor; see the `fileengine_integration_provisioning` project.)
+- **Integration registry = deployment config** (config files: public keys + scopes),
+  provisioned via the management CLI / Ansible and loaded by `http_bridge` — not a
+  runtime DB/UI (§14.1).
+- **Deployment management CLI (operator):** allocate/register/rotate/revoke
+  integration credentials + scopes/namespace for the whole deployment/cluster (backed
+  by the ldap_manager registry) — **not** a tenant-admin UI (§14.1).
+- **Official SPA (AGPL client):** **read-only** integration status/usage and honoring
+  the `managed_by` marker (§14a); it does **not** allocate credentials. (Provisioning
+  blueprints are inline, not stored — no template editor; see the
+  `fileengine_integration_provisioning` project.)
 - `http_bridge`: `/v1/auth/exchange` (delegated-user **and** integration-service
   tokens) + assertion verification (extend `jwt.h` with RS256/ES256 verify + JWKS)
   + delegation/integration claims in `mintJwt`; multi-origin CORS allow-list (§14.6).
@@ -992,7 +1021,7 @@ are the intended, auditable path.
 ### 14.8 V1 scope note
 
 Per the V1 goals (§12), the following upstream items are **committed for V1**, not
-deferred: the integration registry + SPA *Integrations* credential UI (§14.1), the
+deferred: the integration registry (deployment config) + management CLI (§14.1), the
 delegated exchange endpoint incl. the integration service token (§14.2), and the
 provisioning surface (inline blueprints, version-on-metadata; the
 `fileengine_integration_provisioning` project) (§14.7). The multi-origin CORS allow-list
