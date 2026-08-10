@@ -23,6 +23,7 @@ export class SessionManager {
   #cfg;
   #win;
   #fetch;
+  #listeners = [];
 
   /**
    * @param {SessionConfig} cfg
@@ -42,6 +43,18 @@ export class SessionManager {
   setSession(token, expiresIn) {
     this.#token = token || null;
     this.#expiresAt = token ? Date.now() + Number(expiresIn || 0) * 1000 : 0;
+    for (const fn of this.#listeners.slice()) fn(this.#token);
+  }
+
+  /**
+   * Subscribe to token changes (login / refresh / logout). Fires with the new
+   * token (or null). Returns an unsubscribe function. Used by connect() to keep
+   * an API client's bearer in sync.
+   * @param {(token: string|null) => void} fn
+   */
+  onChange(fn) {
+    this.#listeners.push(fn);
+    return () => { this.#listeners = this.#listeners.filter((f) => f !== fn); };
   }
 
   logout() { this.setSession(null, 0); }

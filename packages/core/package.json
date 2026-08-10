@@ -8,7 +8,8 @@
     ".": "./src/index.js",
     "./jsum": "./src/jsum.js",
     "./api": "./src/api.js",
-    "./session": "./src/session.js"
+    "./session": "./src/session.js",
+    "./connect": "./src/connect.js"
   },
   "files": ["src"],
   "scripts": {
