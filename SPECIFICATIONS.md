@@ -792,6 +792,11 @@ entry:
   serves from. These are the source of truth for the browser-origin **CORS allow-lists**
   (§5.4): the management CLI (§14.9) turns them into each browser-facing service's
   allow-list. Optionally per-service/module, matching the integration's enabled modules.
+- **`allowed_ips`** — the integration's **known source IP(s)/CIDR(s)** (its backend's
+  egress addresses). A **defense-in-depth IP allow-list** on the *server-to-server*
+  surfaces (§14.2a): a valid request must originate from one of these, so a compromised
+  **private key alone is not enough** — the attacker must also be on a known network.
+  Deployment config, set via the CLI (§14.9).
 - `enabled`, `created/rotated_at`, audit metadata.
 
 ### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
@@ -845,6 +850,31 @@ Notes: this endpoint is server-to-server (the integration's backend / the kit's
 Node bridge). Rate-limit per `integration_id`; it is a `/v1` route so it can carry
 the same monitoring/allow-list posture as the rest of the bridge.
 
+### 14.2a IP allow-list — defense-in-depth on the server-to-server surfaces
+An additional network gate on the **provisioning + session-relay (exchange)** surfaces:
+a valid request must originate from the integration's **known source IP(s)** (§14.1
+`allowed_ips`), so that a **compromised private key alone is insufficient** — the
+attacker would also have to operate from a whitelisted network (hard to do over TCP).
+- **Where it applies.** Both **server-to-server** chokepoints: `POST /v1/auth/exchange`
+  (the mint point for *both* token types) and the **provisioning API** (:8100). Not the
+  end-user session token's *usage* — that token is used from arbitrary end-user browsers,
+  which can't be IP-restricted; but it can only be **minted** by an exchange call from a
+  known IP, which is the correct chokepoint.
+- **Exchange gate.** After signature/audience/`exp`/`jti` checks (§14.2) and before
+  minting, the bridge verifies the request's client IP ∈ `allowed_ips`; reject + audit
+  otherwise. Empty `allowed_ips` ⇒ the gate is disabled for that integration (opt-in),
+  though it is recommended for every integration.
+- **Token binding for downstream enforcement.** The integration-service token carries
+  the integration's `allowed_ips` as an **`aip`** claim (mirrors the bridge's existing
+  IP-bound `mip` pattern) so the **provisioning service re-checks** the source IP itself
+  — a leaked/replayed integration-service token can't be used from an off-list host.
+- **Trusted-proxy correctness.** Behind the edge (nginx), the real client IP is derived
+  from `X-Forwarded-For` under a **trusted-proxy** config (the platform already does this
+  for audit) — the allow-list matches the *derived* client IP, never the proxy's.
+- **Layered, not sole.** This sits *on top of* the asymmetric-key gate (§14.2) and core
+  ACLs; it narrows the blast radius of a key compromise, it is not a replacement for
+  key hygiene.
+
 ### 14.3 Audit
 New event `auth.delegated_issue` into the tamper-evident chain:
 `{ integration_id, subject, tenant, roles_granted, source_ip, jti, outcome }` —
@@ -863,6 +893,10 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
 - **One credential, one trust root.** The same keypair authorizes both provisioning
   and session hand-off — no second, symmetric service-credential surface to leak or
   manage; a single rotate/revoke covers everything the integration can do.
+- **IP allow-list backstop (§14.2a).** The server-to-server surfaces additionally
+  require a known source IP, so a **compromised private key is not sufficient** on its
+  own — a defense-in-depth second gate, enforced at both the exchange mint point and
+  (via the `aip` claim) the provisioning service.
 
 ### 14.5 Effort / touch points (upstream)
 - **Integration registry = deployment config** (config files: public keys + scopes),
@@ -1081,9 +1115,10 @@ services load, and rolls it out via Ansible. It backs the §14.1 registry.
 **Integration management:**
 - `fe-int add <integration_id> --pubkey <pem|jwks> [--kid <id>] --namespace <prefix>
   --capabilities session,provisioning [--tenants '*'|<pattern>] [--roots <path,…>]
-  [--role-cap <…>] [--actions <…>] [--resources <…>] --domains <origin,…>` —
-  **import the external system's public key** (§14.1; never a private key), set
-  scopes/namespace, and its embedding **domains**.
+  [--role-cap <…>] [--actions <…>] [--resources <…>] --domains <origin,…>
+  --allowed-ips <ip|cidr,…>` — **import the external system's public key** (§14.1;
+  never a private key), set scopes/namespace, embedding **domains** (CORS), and the
+  **source-IP allow-list** (§14.2a defense-in-depth).
 - `fe-int list | show <id> | enable <id> | disable <id> | revoke <id>` — lifecycle.
   `revoke` removes the public key ⇒ closes **both** provisioning and session at once
   (§14.2) and drops the integration's domains from CORS.
