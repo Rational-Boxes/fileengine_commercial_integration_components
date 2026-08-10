@@ -9,7 +9,9 @@
     "./document-preview": "./src/fe-document-preview.js",
     "./uploader": "./src/fe-uploader.js",
     "./search": "./src/fe-search.js",
-    "./comments": "./src/fe-comments.js"
+    "./comments": "./src/fe-comments.js",
+    "./metadata": "./src/fe-metadata.js",
+    "./download": "./src/fe-download.js"
   },
   "files": ["src"],
   "scripts": {

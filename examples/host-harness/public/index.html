@@ -78,6 +78,8 @@ import '/components/fe-document-preview.js'  // à la carte: registers <fe-docum
 import '/components/fe-uploader.js'          // à la carte: registers <fe-uploader>
 import '/components/fe-search.js'            // à la carte: registers <fe-search>
 import '/components/fe-comments.js'          // à la carte: registers <fe-comments> (live WS)
+import '/components/fe-metadata.js'          // à la carte: registers <fe-metadata>
+import '/components/fe-download.js'          // à la carte: registers <fe-download>
 
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
@@ -126,8 +128,11 @@ preview.provider = provider
 document.getElementById('fbHost').appendChild(preview)
 fb.addEventListener('fe:select', (e) => {
   out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name })
+  // preview/comments/meta/download declared below; closures run on click, after init.
   preview.open(e.detail.uid)
-  comments.open(e.detail.uid)   // declared below; closure runs on click, after init
+  comments.open(e.detail.uid)
+  meta.open(e.detail.uid)
+  download.setAttribute('uid', e.detail.uid)
 })
 preview.addEventListener('fe:preview', (e) =>
   out({ 'fe:preview': e.detail.uid, rendition: e.detail.preview?.name, kind: e.detail.kind }))
@@ -159,6 +164,8 @@ search.addEventListener('fe:result-select', (e) => {
   out({ 'fe:result-select': e.detail.uid, name: e.detail.name })
   preview.open(e.detail.uid)
   comments.open(e.detail.uid)
+  meta.open(e.detail.uid)
+  download.setAttribute('uid', e.detail.uid)
 })
 
 // A fifth à la carte component: comments — live over a WebSocket to the discussion
@@ -169,6 +176,20 @@ comments.provider = provider
 comments.setAttribute('endpoint', cfg.fileengine.discuss)
 document.getElementById('fbHost').appendChild(comments)
 comments.addEventListener('fe:comment', (e) => out({ 'fe:comment': e.detail.uid, body: e.detail.body }))
+
+// Metadata editor + download button, both keyed to the selected file (nodes for
+// metadata, files for content). Same loose coordination — no cross-component imports.
+const meta = document.createElement('fe-metadata')
+meta.provider = provider
+document.getElementById('fbHost').appendChild(meta)
+meta.addEventListener('fe:metadata-change', (e) => out({ 'fe:metadata-change': e.detail }))
+
+const download = document.createElement('fe-download')
+download.provider = provider
+download.setAttribute('label', 'Download selected')
+document.getElementById('fbHost').appendChild(download)
+download.addEventListener('fe:download', (e) => out({ 'fe:download': e.detail.filename }))
+download.addEventListener('fe:download-error', (e) => out({ 'fe:download-error': e.detail }))
 
 document.getElementById('signin').onclick = async () => {
   out('Opening OAuth popup…')
