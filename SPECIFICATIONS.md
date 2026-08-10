@@ -716,14 +716,29 @@ delegated end-user sessions (§14.2) and (b) call the provisioning surface (§14
 stand up the structures that application needs. Both capabilities and their scopes
 are declared on the registry entry.
 
+**Unified around one asymmetric keypair — not separate service credentials.** A
+single **public/private key set** authorizes *both* jobs: the integration signs an
+RFC-7523 assertion and `POST /v1/auth/exchange` mints the appropriate token type
+(delegated-user *or* integration-service, per the requested audience + capabilities,
+§14.2). There are deliberately **no separate, symmetric `key:secret` service
+credentials** for provisioning vs. session hand-off. Unifying on the keypair means:
+one credential to store (public key in deployment config, §14.1), rotate, revoke, and
+audit; FileEngine never holds anything forge-capable; and a consistent, attributable
+trust root for every integration action. (This supersedes the idea of using
+ldap_manager's existing symmetric service-credential primitive here — that remains for
+its narrow existing uses, not for embedding integrations.)
+
 **Allocation is a deployment/cluster operation, not a tenant-admin UI.** Because
 integrations are **deployment-wide** (§5.0) and bespoke to the deployment's
 external-app stack, allocating/rotating/revoking a credential is an **operator-level**
 action performed with a **management CLI for the whole deployment/cluster** (backed by
 the ldap_manager registry), **not** a tenant-admin SPA screen. The CLI:
-- **Creates / generates.** Register the integrator's **public key / JWKS** (preferred
-  — the private key never touches FileEngine) *or* generate an asymmetric keypair and
-  print the **private key once** (never persisted).
+- **Imports the external system's public key (mandatory).** Integration configuration
+  **MUST import the external system's public key / JWKS**: the external system
+  generates and **holds its own keypair**, and FileEngine only ever receives the
+  **public** key. There is **no** server-side keypair generation — the private key must
+  never touch FileEngine (whoever holds it *is* the integration, §14.4). Import is by
+  `kid`, supporting multiple keys for rotation.
 - **Configures scope** — the `namespace` prefix (§14.1 fields), capabilities,
   tenants, roots, role/action/resource limits — and **rotates** (new `kid`, overlap,
   retire), **enable/disable**, **revoke**.
@@ -743,8 +758,9 @@ scope minting at §14.2). This suits deployment-wide, bespoke integrations and k
 public keys in the operator's config management, not a tenant-editable store. Each
 entry:
 - `integration_id` (issuer identifier used in the assertion `iss`).
-- **Public key(s) / JWKS** by `kid` (asymmetric; RSA-2048+/EC-P256) — stored in
-  deployment config; FileEngine holds only public keys, never anything forge-capable.
+- **Public key(s) / JWKS** by `kid` (asymmetric; RSA-2048+/EC-P256) — **imported from
+  the external system** and stored in deployment config; FileEngine holds only public
+  keys, never a private key or anything forge-capable.
 - **`capabilities`** — any of `session_exchange`, `provisioning`.
 - `allowed_tenants` — typically **deployment-wide (all tenants)**: an integration is
   deployment-scoped and spins up tenants **dynamically**, so this defaults to any
@@ -820,6 +836,9 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
 - **Non-repudiation + full audit** of every issuance.
 - **Roles are truthful** (read live from the shared LDAP), never asserted by the
   integration — the assertion names a *subject*, not its privileges.
+- **One credential, one trust root.** The same keypair authorizes both provisioning
+  and session hand-off — no second, symmetric service-credential surface to leak or
+  manage; a single rotate/revoke covers everything the integration can do.
 
 ### 14.5 Effort / touch points (upstream)
 - **Integration registry = deployment config** (config files: public keys + scopes),
