@@ -714,8 +714,9 @@ the official client, never the embed kit). It supports:
   (preferred — private key never touches FileEngine) *or* generate an asymmetric
   keypair server-side and reveal the **private key once** for the integrator to
   copy (convenience; never persisted). "API key generation" in the admin sense.
-- **Scope configuration** (below), **enable/disable**, **rotate** (add a new `kid`,
-  overlap window, retire old), **revoke**, and view **usage/audit**.
+- **Scope configuration** (below, incl. the **`namespace` prefix** bound to the
+  credential at creation), **enable/disable**, **rotate** (add a new `kid`, overlap
+  window, retire old), **revoke**, and view **usage/audit**.
 
 **Registry entry (server-side, ldap_manager):**
 - `integration_id` (issuer identifier used in the assertion `iss`).
@@ -728,7 +729,11 @@ the official client, never the embed kit). It supports:
   subject ⇒ reject (pre-provisioned only, v1).
 - `role_cap` (optional least-privilege ceiling; §5.2) and `ttl_cap` (≤ `token_ttl`).
 - **`provisioning_scope`** — the root folder(s)/prefix under which it may create
-  space structures, and the **templates/roles** it is permitted to apply (§14.7).
+  space structures, and the **roles** it is permitted to apply (§14.7).
+- **`namespace`** — a **prefix bound to this credential** at creation, used to
+  namespace the tenant-scoped resources the integration provisions (classifier sets,
+  notify templates, …) so two integrations never collide on a shared name. Carried in
+  the integration-service token as `prov_namespace`; authoritative, not caller-settable.
 - `enabled`, `created/rotated_at`, audit metadata.
 
 ### 14.2 Exchange endpoint (http_bridge — owns HS256 session minting)
@@ -763,9 +768,10 @@ call the provisioning surface (§14.7). Selected by the assertion audience /
 requested scope: `aud: "fileengine-provisioning"` (or `scope=provisioning`) ⇒ if the
 integration holds the `provisioning` capability, mint a **service-scoped** token
 whose `sub = integration_id`, `amr = ["integration"]`, carrying only the
-provisioning scope (bounded by `provisioning_scope`) — **no user roles, no ACL
-bypass**. It authorizes only the §14.7 provisioning routes, still enforced by
-core ACLs on the target roots. This keeps one credential for both jobs while
+provisioning scope (bounded by `provisioning_scope`, plus the credential's
+`namespace` as `prov_namespace` and any `prov_actions`/`prov_resources` limits) —
+**no user roles, no ACL bypass**. It authorizes only the §14.7 provisioning routes,
+still enforced by core ACLs on the target roots. This keeps one credential for both jobs while
 keeping the two token *types* (delegated-user vs integration-service) distinct and
 separately auditable.
 
