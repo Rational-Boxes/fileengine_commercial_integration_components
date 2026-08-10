@@ -13,6 +13,8 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 // Serve the real embed-core ESM straight from the monorepo so manual E2E exercises
 // the actual kit (SessionManager/connect/API_REST), not a reimplementation.
 const CORE_DIR = normalize(join(HERE, '..', '..', 'packages', 'core', 'src'))
+// À la carte visual components (each an independent ES module, served at /components/*).
+const COMPONENTS_DIR = normalize(join(HERE, '..', '..', 'packages', 'components', 'src'))
 const env = process.env
 const PORT = Number(env.HARNESS_PORT || 8181)
 const PUBLIC_ORIGIN = env.HARNESS_PUBLIC_ORIGIN || `http://localhost:${PORT}`
@@ -126,16 +128,18 @@ const server = createServer(async (req, res) => {
   // Expose the TEST integration public key so it can be imported into FileEngine.
   if (path === '/session/pubkey') return send(res, 200, integrationPublicPem, 'application/x-pem-file')
 
-  // /core/<file> -> the real @fileengine/embed-core source (ESM modules).
-  if (path.startsWith('/core/')) {
-    const coreFile = normalize(join(CORE_DIR, path.slice('/core/'.length)))
-    if (!coreFile.startsWith(CORE_DIR)) return send(res, 403, 'forbidden') // path escape
-    try {
-      const body = await readFile(coreFile)
-      const ext = coreFile.slice(coreFile.lastIndexOf('.'))
-      return send(res, 200, body, MIME[ext] || 'application/octet-stream')
-    } catch {
-      return send(res, 404, 'not found')
+  // /core/<file> -> @fileengine/embed-core; /components/<file> -> à la carte components.
+  for (const [prefix, dir] of [['/core/', CORE_DIR], ['/components/', COMPONENTS_DIR]]) {
+    if (path.startsWith(prefix)) {
+      const f = normalize(join(dir, path.slice(prefix.length)))
+      if (!f.startsWith(dir)) return send(res, 403, 'forbidden') // path escape
+      try {
+        const body = await readFile(f)
+        const ext = f.slice(f.lastIndexOf('.'))
+        return send(res, 200, body, MIME[ext] || 'application/octet-stream')
+      } catch {
+        return send(res, 404, 'not found')
+      }
     }
   }
 

@@ -53,9 +53,16 @@
     <div class="row"><label>Result</label><pre id="out">—</pre></div>
     <div class="row"><label>Embedded components (à la carte)</label>
       <div id="mount">
-        <b>&lt;fe-session&gt;</b> (M1) is live — a non-visual provider drives the session +
-        API clients above. Visual <b>&lt;fe-*&gt;</b> components mount here as they land.<br>
-        This harness exercises the full <b>session handshake + delegated exchange + CORS</b> path.
+        <p class="muted">
+          <b>&lt;fe-session&gt;</b> (M1) drives the session; <b>&lt;fe-file-browser&gt;</b> below is a
+          live à la carte component discovering it over the bus. Sign in (or exchange) first, then
+          <b>Load</b>. Clicking a file emits <code>fe:select</code>.
+        </p>
+        <div class="row">
+          <input id="fbFolder" value="root" placeholder="folder uid" />
+          <button id="fbLoad" class="ghost">Load folder</button>
+        </div>
+        <div id="fbHost"></div>
       </div>
     </div>
   </section>
@@ -66,6 +73,7 @@
 // the barrel registers the <fe-session> custom element (§8), so the harness drives the
 // actual kit end-to-end: <fe-session> -> SessionProvider -> SessionManager + connect().
 import '/core/index.js'
+import '/components/fe-file-browser.js'   // à la carte: registers <fe-file-browser>
 
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
@@ -93,6 +101,19 @@ feSession.addEventListener('fe:session', (e) =>
 
 // A connected client from the provider: bearer tracks the session; 401 auto-refreshes.
 const api = provider.client()
+
+// Mount a live <fe-file-browser> and hand it the provider explicitly (avoids DOM-order
+// discovery races). It borrows the provider's client; fe:select bubbles up to the host.
+const fb = document.createElement('fe-file-browser')
+fb.provider = provider
+fb.setAttribute('folder', 'root')
+document.getElementById('fbHost').appendChild(fb)
+fb.addEventListener('fe:select', (e) => out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name }))
+fb.addEventListener('fe:navigate', (e) => out({ 'fe:navigate': e.detail.uid }))
+document.getElementById('fbLoad').onclick = () => {
+  if (!provider.hasSession()) return out('sign in (or exchange) first')
+  fb.open(document.getElementById('fbFolder').value.trim() || 'root')
+}
 
 document.getElementById('signin').onclick = async () => {
   out('Opening OAuth popup…')
