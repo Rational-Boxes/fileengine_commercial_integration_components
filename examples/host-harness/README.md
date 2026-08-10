@@ -44,11 +44,19 @@ A tiny **Node built-in-`http`** server (no `npm install`) that serves:
 - `GET /session/callback` → the popup-OAuth callback page (reads the `#token` fragment,
   `postMessage`s to the opener with a pinned `targetOrigin`) — the §6.1 edge callback,
   hosted here for dev so the harness is self-contained.
-- `POST /session/exchange` → **(delegated profile only)** the §6.3 signing shim: signs
-  an RFC-7523 assertion with the harness's *test* integration private key and relays
-  FileEngine `/v1/auth/exchange`, returning the token. **Stub** until the upstream
-  exchange endpoint (§14.2) lands; wire the real key + endpoint then.
+- `POST /session/exchange` → **(delegated profile)** the §14.2 signing shim: signs a
+  short-lived, single-use RFC-7523 assertion for `{sub, tenant}` with the harness's
+  *test* integration private key and relays FileEngine `/v1/auth/exchange`, returning
+  the minted session token. **Live** against the upstream exchange endpoint.
+- `GET /session/pubkey` → the harness's TEST integration **public** key (PEM), to import
+  into FileEngine (`INTEGRATION_PUBLIC_KEY_FILE`).
 - `GET /healthz`.
+
+On first boot the harness generates a persistent RSA keypair (`.integration_key.pem` +
+`.pub.pem`, gitignored) and prints the `INTEGRATION_ISSUER` / `INTEGRATION_PUBLIC_KEY_FILE`
+values to configure on the FileEngine side. The signer lives in `lib/integration.mjs`
+and is unit-tested (`node --test test/*.test.mjs`) — including a signature round-trip
+against the SPKI public key, the same shape the bridge's C++ verifier consumes.
 
 ```
 Browser (ngrok HTTPS origin)                 FileEngine dev stack
@@ -73,9 +81,12 @@ node server.mjs                 # serves http://localhost:8181
 ngrok http 8181                 # note the https://<name>.ngrok.io origin
 
 # 4) On the FileEngine side, allow the ngrok origin:
-#    - add it to the CORS allow-lists (fe-int cors, or *_CORS_ORIGINS env)
+#    - add it to the CORS allow-lists (HTTP_CORS_ORIGINS, comma-separated)
 #    - add https://<name>.ngrok.io/session/callback to the OAuth return_to allowlist
-#    - (delegated profile) register the harness test PUBLIC key + its scopes/namespace
+#    - (delegated profile) import the harness TEST public key + issuer into the bridge:
+#        INTEGRATION_ISSUER=harness-integration
+#        INTEGRATION_PUBLIC_KEY_FILE=<printed on harness boot, or GET /session/pubkey>
+#      (both values are printed to the harness console on startup)
 
 # 5) Open the ngrok URL in a browser and drive the control panel.
 ```
@@ -91,7 +102,9 @@ ngrok http 8181                 # note the https://<name>.ngrok.io origin
 | `HARNESS_PROFILE` | `oauth` \| `delegated` \| `passthrough` |
 | `HARNESS_MODULES` | csv of component modules to load (à la carte) |
 | `HARNESS_KIT_BASE` | where to load the kit ESM from (local `dist/` or CDN) |
-| `FE_INTEGRATION_ID` / `FE_INTEGRATION_PRIVATE_KEY` | delegated profile only (test key) |
+| `HARNESS_INTEGRATION_ISSUER` | assertion `iss` (default `harness-integration`) |
+| `HARNESS_INTEGRATION_AUDIENCE` | exchange URL (default `FILEENGINE_API_BASE/v1/auth/exchange`) |
+| `HARNESS_INTEGRATION_KEY_FILE` | TEST private-key path (default `.integration_key.pem`, auto-generated) |
 
 ## Status / roadmap
 
@@ -99,7 +112,8 @@ ngrok http 8181                 # note the https://<name>.ngrok.io origin
   and shows the control panel. Component embeds are stubbed until the kit's M0/M1 land.
 - **As components land:** flesh out `index.html` to import the real `<fe-*>` modules and
   add per-module demo panels.
-- **When the exchange endpoint (§14.2) lands:** wire the real delegated signing shim.
+- **Delegated exchange (§14.2):** ✅ live — signs a real assertion and mints a session
+  via the bridge's `/v1/auth/exchange`.
 
 Security: this harness holds a **test** integration private key for the delegated
 profile only — never a production key. Its ngrok origin is a *test* CORS entry to be

@@ -1,0 +1,5 @@
+# TEST integration keypair (generated on first boot; never commit private keys)
+.integration_key.pem
+.integration_key.pub.pem
+node_modules/
+.env

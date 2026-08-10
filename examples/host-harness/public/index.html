@@ -37,6 +37,10 @@
       <button id="refresh" class="ghost">Refresh</button>
       <button id="logout" class="ghost">Logout</button>
     </div>
+    <div class="row"><label>Delegated exchange (§14.2 — signs a TEST assertion)</label>
+      <input id="delegatedUser" placeholder="delegated username (LDAP uid)" />
+      <button id="exchange">Exchange → session</button>
+    </div>
     <div class="row"><label>Smoke test (proves token + CORS)</label>
       <button id="whoami" class="ghost">GET /v1/whoami</button>
       <button id="tenants" class="ghost">GET /v1/tenants</button>
@@ -103,6 +107,28 @@ document.getElementById('refresh').onclick = async () => {
   catch (err) { out('refresh failed: ' + err.message) }
 }
 document.getElementById('logout').onclick = () => { session.logout(); out('cleared') }
+
+// Delegated exchange: the harness signs a TEST assertion for the given user and relays
+// FileEngine /v1/auth/exchange; on success the minted token becomes the live session.
+document.getElementById('exchange').onclick = async () => {
+  const sub = document.getElementById('delegatedUser').value.trim()
+  if (!sub) return out('enter a delegated username first')
+  out('Exchanging assertion for ' + sub + '…')
+  try {
+    const r = await fetch('/session/exchange', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sub, tenant: cfg.tenant || undefined }),
+    })
+    const body = await r.json().catch(() => ({}))
+    if (r.ok && body.access_token) {
+      session.setSession(body.access_token, body.expires_in)  // fires onChange → bearer armed
+      out({ exchanged: true, sub, expires_in: body.expires_in })
+    } else {
+      out({ status: r.status, error: body })
+    }
+  } catch (err) { out('exchange failed: ' + err.message) }
+}
 
 // TODO(M1): import cfg.modules from cfg.kitBase and mount <fe-session> + <fe-*>.
 </script>
