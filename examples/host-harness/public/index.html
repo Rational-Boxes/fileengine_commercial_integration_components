@@ -53,18 +53,19 @@
     <div class="row"><label>Result</label><pre id="out">—</pre></div>
     <div class="row"><label>Embedded components (à la carte)</label>
       <div id="mount">
-        Components mount here once the kit's M0/M1 modules exist.<br>
-        This harness already exercises the full <b>session handshake + CORS</b> path above.
+        <b>&lt;fe-session&gt;</b> (M1) is live — a non-visual provider drives the session +
+        API clients above. Visual <b>&lt;fe-*&gt;</b> components mount here as they land.<br>
+        This harness exercises the full <b>session handshake + delegated exchange + CORS</b> path.
       </div>
     </div>
   </section>
 </main>
 
 <script type="module">
-// Import the REAL embed-core straight from the monorepo (served at /core/*), so this
-// harness exercises the actual kit — SessionManager (§5.1 popup-OAuth) + connect()
-// (§6.2 401->refresh->replay) — rather than a reimplementation.
-import { SessionManager, connect } from '/core/index.js'
+// Import the REAL embed-core straight from the monorepo (served at /core/*). Importing
+// the barrel registers the <fe-session> custom element (§8), so the harness drives the
+// actual kit end-to-end: <fe-session> -> SessionProvider -> SessionManager + connect().
+import '/core/index.js'
 
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
@@ -74,17 +75,24 @@ document.getElementById('cfg').textContent = JSON.stringify(cfg, null, 2)
 document.getElementById('profilePill').textContent = 'profile: ' + cfg.profile
 document.getElementById('tenantPill').textContent = 'tenant: ' + (cfg.tenant || '(unset)')
 
-const session = new SessionManager({
-  bridgeBase: cfg.fileengine.api,
-  oauthProvider: cfg.oauthProvider,
-  callbackUrl: cfg.publicOrigin + cfg.callbackPath,
-  hostOrigin: cfg.publicOrigin,           // only postMessages from our own origin are trusted
-})
-session.onChange((t) =>
-  document.getElementById('sessionPill').textContent = 'session: ' + (t ? 'active' : 'none'))
+// One non-visual <fe-session> provider, configured from /config and mounted into the
+// DOM (connectedCallback builds the SessionProvider). Sibling components would discover
+// it over the JSUM bus; here the host page talks to it directly.
+const feSession = document.createElement('fe-session')
+feSession.setAttribute('base', cfg.fileengine.api)
+feSession.setAttribute('tenant', cfg.tenant || '')
+feSession.setAttribute('oauth-provider', cfg.oauthProvider)
+feSession.setAttribute('host-origin', cfg.publicOrigin)  // only our own origin is trusted
+feSession.setAttribute('callback-url', cfg.publicOrigin + cfg.callbackPath)
+document.body.appendChild(feSession)
 
-// One connected client: bearer tracks the session; a 401 auto-refreshes + replays.
-const api = connect(session, { host_url: cfg.fileengine.api, on_error: (e) => out('api error: ' + e) })
+const provider = feSession.getSession()
+const session = provider.session
+feSession.addEventListener('fe:session', (e) =>
+  document.getElementById('sessionPill').textContent = 'session: ' + (e.detail.active ? 'active' : 'none'))
+
+// A connected client from the provider: bearer tracks the session; 401 auto-refreshes.
+const api = provider.client()
 
 document.getElementById('signin').onclick = async () => {
   out('Opening OAuth popup…')

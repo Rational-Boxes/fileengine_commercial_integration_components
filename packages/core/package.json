@@ -9,7 +9,8 @@
     "./jsum": "./src/jsum.js",
     "./api": "./src/api.js",
     "./session": "./src/session.js",
-    "./connect": "./src/connect.js"
+    "./connect": "./src/connect.js",
+    "./fe-session": "./src/fe-session.js"
   },
   "files": ["src"],
   "scripts": {
