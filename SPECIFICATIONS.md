@@ -2,7 +2,9 @@
 
 MIT-licensed, embeddable, à la carte **end-user** document functionality for
 third-party ("host") commercial applications, built as dependency-free W3C Web
-Components plus a minimal Node/Express **session bridge**.
+Components. Session support is FileEngine-side + client-direct; an integrator-side
+server is not required for popup-OAuth (a tiny signing shim is needed only for the
+delegated profile) — see §6.
 
 ---
 
@@ -101,9 +103,12 @@ Host application page
 FileEngine services (CORS allows host origin) │
  :8090 files · :8092 search/RAG · :8094 ──────┘
  discussion · :8098 BCF · :8099 folder_actions
-        ▲ mint / refresh (handshake only)
+        ▲ refresh / SSO — client-direct         ▲ OAuth popup → callback page
+        │                                        │  (FileEngine edge / http_bridge)
+   (no integrator server for popup-OAuth)   FileEngine IdP
         │
-Node/Express session bridge (this repo) ── OAuth popup/iframe ── FileEngine IdP
+   delegated profile only: tiny assertion-signing shim on the integrator's
+   existing backend (holds the integration key) → POST /v1/auth/exchange
 ```
 
 ### 4.1 Layers
@@ -117,9 +122,12 @@ Node/Express session bridge (this repo) ── OAuth popup/iframe ── FileEng
 3. **Session core** (`<fe-session>` + `SessionManager`) — the single shared
    dependency: holds the token, the refresh handler, tenant, base URLs, and a
    registry the components discover via the message bus.
-4. **Session bridge (Node/Express)** — **handshake only**. It negotiates/refreshes
-   the session token and never proxies data: once the client holds a valid JWT it
-   calls FileEngine's REST/WS interfaces **directly**. As thin as possible.
+4. **Session support (no mandatory server, §6)** — the handshake needs **no
+   integrator-side bridge** for popup-OAuth: the browser-facing callback + config are
+   hosted **FileEngine-side (edge / http_bridge)**, and refresh / SSO / logout are
+   **client-direct** to FileEngine. The *only* integrator-side piece is a tiny
+   assertion-signing shim for the delegated profile (holds the integration key). A
+   Node/Express bridge is shipped as an **optional reference**, never a data proxy.
 
 ### 4.2 One token, whole stack
 
@@ -374,47 +382,74 @@ chat) **carrying the current session — no second login**. This is cross-origin
 
 ---
 
-## 6. Backend session bridge (Node/Express)
+## 6. Session support — where each piece lives (no mandatory bridge server)
 
-Minimal, single-purpose, MIT. **Handshake only — it is never a data proxy.** Its
-sole job is to get a valid JWT into the client; all document traffic then goes
-client ↔ FileEngine directly (§5.4).
+A standalone Node/Express bridge is **not strictly required.** The handshake
+decomposes into pieces that each belong on the side holding the relevant trust; only
+**one** piece is inherently integrator-side, and it is tiny. The FileEngine-side,
+browser-facing pieces move to the edge; everything else is client-direct. So a
+dedicated bridge server is an **optional reference implementation** (§6.4), not a
+required component — and **popup-OAuth needs no integrator server at all.**
 
-### 6.1 Responsibilities
-- Serve the OAuth **login start** + **callback** (`postMessage`) pages.
-- **Refresh** relay (`POST /v1/auth/refresh` passthrough).
-- Optionally **sign the assertion + relay `/v1/auth/exchange`** (delegated
-  profile, §5.2/§14) or **exchange Basic** for a token (passthrough profile).
-  The bridge never mints tokens itself.
-- Optionally request a **deep-link SSO hand-off code** for "Open in FileEngine"
-  (§5.5).
-- Serve nothing else. No data/proxy routes exist.
+| Piece | Needs a server? | Where it lives |
+|---|---|---|
+| OAuth login-start redirect | no | client builds the FileEngine OAuth URL directly |
+| OAuth callback (postMessage) page | no (static) | **FileEngine edge / http_bridge** (browser-facing, allowlisted) |
+| Token refresh | no | client → FileEngine `/v1/auth/refresh` **directly** (CORS) |
+| Deep-link SSO hand-off | no | client → FileEngine `/v1/auth/sso/handoff` **directly** |
+| session/config | no | static, or a small FileEngine-side endpoint |
+| Delegated assertion signing | **yes — integrator-side** | a tiny shim on the integrator's **existing** backend (holds the integration key) |
+| Credential-passthrough Basic→token | yes — integrator-side | same shim, only if that profile is used |
 
-### 6.2 Endpoints (bridge)
-- `GET /session/login?provider=&state=` → 302 to FileEngine OAuth (return_to = callback).
-- `GET /session/callback` → static HTML that posts `{token,…}` to `window.opener`.
-- `POST /session/refresh` → relays `POST /v1/auth/refresh`, returns fresh token.
-- `POST /session/logout` → relays `DELETE /v1/auth/token`.
-- `GET /session/config` → non-secret client config (service base URLs, enabled
-  modules, tenant, theme defaults) so the embed can self-configure.
-- *(delegated profile)* `POST /session/exchange` → builds the signed assertion for
-  the host-mapped subject and relays `POST /v1/auth/exchange`; returns the token.
-- *(deep-link SSO)* `POST /session/handoff` → obtains a one-time SSO code (§5.5) for
-  an "Open in FileEngine" link.
+### 6.1 FileEngine-side embed support (edge / http_bridge)
+The browser-facing, no-secret pieces live on the FileEngine side:
+- **OAuth callback page** — a small static page (served by the FileEngine edge /
+  http_bridge, or the SPA vhost) that reads the token from the URL fragment and
+  `postMessage`s it to the opener with a validated `targetOrigin` (the embedding
+  domain, carried in the OAuth `state`, checked against the allow-list). Being
+  FileEngine-origin, its `return_to` is trivially allowlisted.
+- **session/config** — optional small endpoint (or static file) returning non-secret
+  client config (service base URLs, enabled modules, tenant, theme defaults).
+- **Placement:** these are browser-facing → the **public edge (http_bridge / SPA
+  vhost)**, **not** the internal provisioning service (which is server-to-server and
+  not browser-exposed). Server-to-server integration support may live in the
+  provisioning/integration service; browser-facing session support does not.
+  (Upstream item §14.6.)
 
-### 6.3 Explicit non-goal — no data proxy
-The bridge does **not** proxy REST/WebSocket/streaming traffic, does not hold the
-token server-side, and offers no `direct|proxy` switch. Keeping the JWT in the
-client and calling FileEngine directly is the intended model; access is governed by
-FileEngine's CORS allow-list (§5.4) + ACLs, not by a bridge in the data path.
+### 6.2 Client-direct (no relay)
+The client holds the JWT and CORS allows the embedding origin (§5.4), so the embed
+kit calls FileEngine **directly** — no relay:
+- **Refresh** — `POST /v1/auth/refresh` (Bearer), driven by `API_REST`'s
+  401→re-auth→replay.
+- **Deep-link SSO** — `POST /v1/auth/sso/handoff` (Bearer).
+- **Logout** — `DELETE /v1/auth/token`.
 
-### 6.4 Config (bridge, env)
-`BRIDGE_PORT`, `HOST_ORIGIN` (postMessage target), `FILEENGINE_BRIDGE_URL` (:8090),
-`FILEENGINE_SPA_URL` (deep-link base), service base URLs, `MODULES` (csv:
-core,search,collab,3d), `PROFILE` (oauth|delegated|passthrough); and — only for the
-delegated profile — `FE_INTEGRATION_ID` + `FE_INTEGRATION_PRIVATE_KEY` (the
-assertion-signing key; guarded, server-only, never shipped to the browser). The
-bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
+### 6.3 Integrator-side signing shim (delegated profile only)
+The **one** piece that must stay integrator-side: signing the RFC-7523 assertion with
+the **integration private key** — whoever holds it *is* the integration, so FileEngine
+must not hold it (or the separation/attribution collapses, §5.2). It is a few lines on
+the integrator's **existing** backend: (1) build + sign `{iss, sub, tenant, aud, exp}`
+with the integration key; (2) `POST /v1/auth/exchange` → `{token}`; (3) hand the token
+to the embed (same-origin to the host). Shipped as a small **SDK/reference** (a Node
+implementation + a language-agnostic spec), implementable in any stack — **not** a
+mandatory standalone service. (Credential-passthrough's Basic→token is the same shape.)
+
+### 6.4 Optional reference bridge (`bridge/` in this repo)
+For integrators who prefer a drop-in over adding code to their backend, the repo ships
+an **optional** minimal Node/Express reference bundling §6.3 (and, for dev, local
+copies of the §6.1 pages). Convenience/reference only, **not** a required deployment,
+and **never a data proxy** (§6.5).
+
+### 6.5 Explicit non-goal — no data proxy
+Nothing in the session support proxies REST/WebSocket/streaming traffic or holds the
+token server-side. The JWT lives in the client; document traffic is client ↔ FileEngine
+directly, governed by CORS (§5.4) + ACLs.
+
+### 6.6 Config (only if the reference bridge / signing shim is used)
+`HOST_ORIGIN` (postMessage target), `FILEENGINE_BRIDGE_URL` (:8090),
+`FILEENGINE_SPA_URL` (deep-link base); and — delegated only — `FE_INTEGRATION_ID` +
+`FE_INTEGRATION_PRIVATE_KEY` (server-only, never shipped to the browser; **never** the
+global `FILEENGINE_JWT_SECRET`).
 
 ---
 
@@ -472,7 +507,7 @@ bridge **never** holds the global `FILEENGINE_JWT_SECRET`.
   packages/collab    → <fe-comments> <fe-reviews> <fe-notifications>
   packages/openbim   → <fe-model-viewer>
   packages/themes    → theme-light, theme-dark
-  bridge/            → Node/Express session bridge
+  bridge/            → OPTIONAL Node/Express reference (signing shim; §6.4) — not required
   examples/          → host-page demos (vanilla, React island, plain HTML)
   ```
 - **Versioning:** independent semver per package; `core` is the shared peer.
@@ -694,9 +729,16 @@ impersonation" gap that sharing `FILEENGINE_JWT_SECRET` leaves open.
 - Docs: integration onboarding (key registration, assertion format, scopes,
   template authoring).
 
-### 14.6 Related upstream items (CORS allow-list + deep-link SSO)
+### 14.6 Related upstream items (CORS allow-list + edge callback + deep-link SSO)
 
-Two smaller upstream additions the embedding model depends on:
+Small upstream additions the embedding model depends on:
+
+- **Embed OAuth callback + config at the edge (§6.1).** So popup-OAuth needs **no
+  integrator-side server**, FileEngine hosts a tiny static **embed callback page**
+  (reads the token fragment, `postMessage`s to the opener with a `state`-derived,
+  allow-listed `targetOrigin`) at the edge / http_bridge / SPA vhost, plus an optional
+  `session/config`. Its `return_to` is FileEngine-origin, so trivially allowlisted.
+  Browser-facing → the public edge, **not** the internal provisioning service.
 
 - **Multi-origin CORS on `http_bridge` (§5.4).** Today `HTTP_CORS_ORIGIN` echoes a
   single origin. Extend it to a configured **allow-list** of embedding domains:
