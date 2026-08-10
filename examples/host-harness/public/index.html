@@ -73,7 +73,8 @@
 // the barrel registers the <fe-session> custom element (§8), so the harness drives the
 // actual kit end-to-end: <fe-session> -> SessionProvider -> SessionManager + connect().
 import '/core/index.js'
-import '/components/fe-file-browser.js'   // à la carte: registers <fe-file-browser>
+import '/components/fe-file-browser.js'      // à la carte: registers <fe-file-browser>
+import '/components/fe-document-preview.js'  // à la carte: registers <fe-document-preview>
 
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
@@ -108,12 +109,24 @@ const fb = document.createElement('fe-file-browser')
 fb.provider = provider
 fb.setAttribute('folder', 'root')
 document.getElementById('fbHost').appendChild(fb)
-fb.addEventListener('fe:select', (e) => out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name }))
 fb.addEventListener('fe:navigate', (e) => out({ 'fe:navigate': e.detail.uid }))
 document.getElementById('fbLoad').onclick = () => {
   if (!provider.hasSession()) return out('sign in (or exchange) first')
   fb.open(document.getElementById('fbFolder').value.trim() || 'root')
 }
+
+// A second à la carte component: preview. Inter-component coordination is loose —
+// the browser emits fe:select (events out), the host routes it to preview.open (methods
+// in). Neither imports the other; both share the one <fe-session> provider.
+const preview = document.createElement('fe-document-preview')
+preview.provider = provider
+document.getElementById('fbHost').appendChild(preview)
+fb.addEventListener('fe:select', (e) => {
+  out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name })
+  preview.open(e.detail.uid)
+})
+preview.addEventListener('fe:preview', (e) =>
+  out({ 'fe:preview': e.detail.uid, rendition: e.detail.preview?.name, kind: e.detail.kind }))
 
 document.getElementById('signin').onclick = async () => {
   out('Opening OAuth popup…')

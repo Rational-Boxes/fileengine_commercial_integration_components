@@ -26,6 +26,7 @@ export class SessionProvider {
 
   get session() { return this.#session; }
   get tenant() { return this.#config.tenant || ""; }
+  get base() { return this.#config.bridgeBase || ""; }
 
   /**
    * A connected API client for a FileEngine service. All services accept the one

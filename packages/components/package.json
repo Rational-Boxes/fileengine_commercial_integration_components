@@ -5,7 +5,8 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    "./file-browser": "./src/fe-file-browser.js"
+    "./file-browser": "./src/fe-file-browser.js",
+    "./document-preview": "./src/fe-document-preview.js"
   },
   "files": ["src"],
   "scripts": {
