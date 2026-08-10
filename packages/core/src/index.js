@@ -4,6 +4,7 @@ export { multicall, clear_cache_for, init_hydration_lifecycle } from "./jsum.js"
 export { API_REST, HTTP_GET, HTTP_POST_FORM, HTTP_POST_JSON, HTTP_DELETE, HTTP_PUT } from "./api.js";
 export { SessionManager } from "./session.js";
 export { connect } from "./connect.js";
+export { LiveSocket } from "./live-socket.js";
 export { SessionProvider } from "./session-provider.js";
 export { FeSession, defineFeSession } from "./fe-session.js";
 

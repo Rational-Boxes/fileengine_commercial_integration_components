@@ -77,6 +77,7 @@ import '/components/fe-file-browser.js'      // à la carte: registers <fe-file-
 import '/components/fe-document-preview.js'  // à la carte: registers <fe-document-preview>
 import '/components/fe-uploader.js'          // à la carte: registers <fe-uploader>
 import '/components/fe-search.js'            // à la carte: registers <fe-search>
+import '/components/fe-comments.js'          // à la carte: registers <fe-comments> (live WS)
 
 const out = (v) => document.getElementById('out').textContent =
   typeof v === 'string' ? v : JSON.stringify(v, null, 2)
@@ -126,6 +127,7 @@ document.getElementById('fbHost').appendChild(preview)
 fb.addEventListener('fe:select', (e) => {
   out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name })
   preview.open(e.detail.uid)
+  comments.open(e.detail.uid)   // declared below; closure runs on click, after init
 })
 preview.addEventListener('fe:preview', (e) =>
   out({ 'fe:preview': e.detail.uid, rendition: e.detail.preview?.name, kind: e.detail.kind }))
@@ -156,7 +158,17 @@ document.getElementById('fbHost').appendChild(search)
 search.addEventListener('fe:result-select', (e) => {
   out({ 'fe:result-select': e.detail.uid, name: e.detail.name })
   preview.open(e.detail.uid)
+  comments.open(e.detail.uid)
 })
+
+// A fifth à la carte component: comments — live over a WebSocket to the discussion
+// service (:8094). Selecting a file (from the browser or search) opens its thread; new
+// comments arrive live. The WS companion is vended by <fe-session>, not imported here.
+const comments = document.createElement('fe-comments')
+comments.provider = provider
+comments.setAttribute('endpoint', cfg.fileengine.discuss)
+document.getElementById('fbHost').appendChild(comments)
+comments.addEventListener('fe:comment', (e) => out({ 'fe:comment': e.detail.uid, body: e.detail.body }))
 
 document.getElementById('signin').onclick = async () => {
   out('Opening OAuth popup…')

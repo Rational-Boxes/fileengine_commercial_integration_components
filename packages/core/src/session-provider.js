@@ -7,6 +7,7 @@
 
 import { SessionManager } from "./session.js";
 import { connect } from "./connect.js";
+import { LiveSocket } from "./live-socket.js";
 
 export class SessionProvider {
   #session;
@@ -42,6 +43,14 @@ export class SessionProvider {
     }
     return this.#clients.get(base);
   }
+
+  /**
+   * A LiveSocket for a live channel (discussion-live, RAG chat). Components get their
+   * WebSocket companion from the session core rather than importing it, keeping each
+   * component's static imports to its own model (§4.3).
+   * @param {string} url  ws(s):// URL (the caller appends token/tenant query params)
+   */
+  liveSocket(url, opts = {}) { return new LiveSocket(url, opts); }
 
   login(opts) { return this.#session.login(opts); }
   logout() { this.#session.logout(); }

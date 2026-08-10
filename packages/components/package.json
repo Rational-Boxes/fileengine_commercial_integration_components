@@ -8,7 +8,8 @@
     "./file-browser": "./src/fe-file-browser.js",
     "./document-preview": "./src/fe-document-preview.js",
     "./uploader": "./src/fe-uploader.js",
-    "./search": "./src/fe-search.js"
+    "./search": "./src/fe-search.js",
+    "./comments": "./src/fe-comments.js"
   },
   "files": ["src"],
   "scripts": {

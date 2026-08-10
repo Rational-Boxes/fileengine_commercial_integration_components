@@ -10,6 +10,7 @@
     "./api": "./src/api.js",
     "./session": "./src/session.js",
     "./connect": "./src/connect.js",
+    "./live-socket": "./src/live-socket.js",
     "./fe-session": "./src/fe-session.js"
   },
   "files": ["src"],
