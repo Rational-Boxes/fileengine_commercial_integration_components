@@ -491,6 +491,84 @@ global `FILEENGINE_JWT_SECRET`).
   `multicall` to `fe-session` (or a documented global) rather than importing it,
   keeping modules decoupled.
 
+### 8.1 Framework integration — Vue 3 (and vanilla / React)
+
+The components are plain custom elements, so they drop into any framework. **Vue 3
+is a first-class target** — it renders and binds custom elements natively. A worked
+Vue 3 example ships in `examples/vue3/`.
+
+**One-time Vite/Vue config** — tell the compiler `<fe-*>` are custom elements so Vue
+doesn't try to resolve them as Vue components:
+```ts
+// vite.config.ts
+import vue from '@vitejs/plugin-vue'
+export default {
+  plugins: [vue({ template: { compilerOptions: {
+    isCustomElement: (tag) => tag.startsWith('fe-'),
+  } } })],
+}
+```
+
+**A component (à la carte imports, props in, events out, theming):**
+```vue
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import '@fileengine/embed/core'             // registers <fe-session>
+import '@fileengine/embed/file-browser'     // registers <fe-file-browser>
+import '@fileengine/embed/document-preview' // …import only what you use
+
+const base = 'https://files.example.com'    // FileEngine base (session config)
+const tenant = 'acme'
+const currentUid = ref('root')
+
+const browser = ref<HTMLElement | null>(null)
+onMounted(() => {
+  // fe:* events are namespaced (contain a colon) → bind via addEventListener,
+  // which is the robust path in Vue templates for colon-named events.
+  browser.value?.addEventListener('fe:select', (e: Event) => {
+    currentUid.value = (e as CustomEvent).detail.uid
+  })
+})
+</script>
+
+<template>
+  <!-- one session provider; components discover it over the JSUM bus -->
+  <fe-session :base="base" :tenant="tenant"></fe-session>
+
+  <div class="fe-theme">
+    <!-- Vue sets these as element properties when defined, else attributes;
+         reactive refs flow in and the components update. -->
+    <fe-file-browser ref="browser" folder="root"></fe-file-browser>
+    <fe-document-preview :uid="currentUid" markup></fe-document-preview>
+  </div>
+</template>
+
+<style>
+/* Theme via CSS custom properties — they pierce Shadow DOM (§7). */
+.fe-theme {
+  --fe-color-bg: #fff; --fe-color-fg: #111; --fe-accent: #2563eb;
+  --fe-radius: 10px; --fe-font: Inter, system-ui, sans-serif;
+}
+</style>
+```
+
+**Notes / gotchas:**
+- **Props:** Vue 3 sets a bound value as a DOM *property* when the custom element
+  defines it (our components do), else as an attribute — so `:uid`, `:config`
+  (objects/arrays) work without the `.prop` modifier. Primitive attributes
+  (`folder="root"`) are equivalent.
+- **Events:** the `fe:*` events carry a colon; prefer `addEventListener` on a
+  template `ref` (above). Simple `@`-listeners work for any non-namespaced events the
+  kit also emits.
+- **SSR / Nuxt:** custom elements are client-only — render under `<ClientOnly>` or
+  gate registration in `onMounted` to avoid a server-side `document` reference.
+- **Reactivity model:** *events out, props/refs in* — a component emits (`fe:select`),
+  the host updates Vue state, and passing it back down (`:uid`) drives the next
+  component. No two-way binding magic; just DOM props + events.
+- **React/vanilla:** identical pattern — React ≥19 sets custom-element props directly
+  (earlier versions: use a `ref` + set properties / `addEventListener`); vanilla just
+  imports the module and sets attributes.
+
 ---
 
 ## 9. Distribution & build (TypeScript → ESM + types)
@@ -508,7 +586,7 @@ global `FILEENGINE_JWT_SECRET`).
   packages/openbim   → <fe-model-viewer>
   packages/themes    → theme-light, theme-dark
   bridge/            → OPTIONAL Node/Express reference (signing shim; §6.4) — not required
-  examples/          → host-page demos (vanilla, React island, plain HTML)
+  examples/          → host-page demos: vue3/ (first-class, §8.1), react/, vanilla/, plain HTML
   ```
 - **Versioning:** independent semver per package; `core` is the shared peer.
 - **No build for consumers:** integrators can `<script type=module>` the CDN ESM
@@ -581,7 +659,7 @@ forward.
 6. **M4 — 3D / openBIM (Bundle D).** model viewer + BCF export.
 7. **M5 — Hardening & deep-link SSO.** deep-link SSO hand-off (`sso/handoff`+
    `redeem` + SPA landing, §5.5), proxy-free audit pass, docs/examples
-   (React/Angular island demos), CDN publish.
+   (Vue 3 [§8.1], React, Angular island demos), CDN publish.
 
 ---
 
