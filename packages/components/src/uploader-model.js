@@ -19,7 +19,12 @@ export class UploaderModel {
    */
   constructor(provider, opts = {}) {
     this.#provider = provider;
-    this.#fetch = opts.fetchImpl || (typeof fetch !== "undefined" ? fetch : undefined);
+    // Wrap the global fetch so `this.#fetch(...)` invokes it with the global as `this`
+    // (a bare stored reference would set `this` to this model -> "Illegal invocation").
+    this.#fetch = opts.fetchImpl ||
+      (typeof globalThis !== "undefined" && typeof globalThis.fetch === "function"
+        ? (...args) => globalThis.fetch(...args)
+        : undefined);
     this.#tenant = opts.tenant || (provider && provider.tenant) || "";
   }
 

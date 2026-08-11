@@ -86,6 +86,23 @@ test("omits auth/tenant headers when unauthenticated / no tenant", async () => {
   assert.equal(h["X-Tenant"], undefined);
 });
 
+test("uses the global fetch with the global as `this` (no Illegal invocation)", async () => {
+  const realFetch = globalThis.fetch;
+  let capturedThis = "unset";
+  globalThis.fetch = function (url) {
+    capturedThis = this;
+    return Promise.resolve({ ok: true, status: url.endsWith("/files") ? 201 : 204, json: async () => ({ uid: "u" }) });
+  };
+  try {
+    const m = new UploaderModel(provider(), {});   // no fetchImpl -> real global path
+    await m.upload("root", "n", "b");
+    assert.notEqual(capturedThis, m, "fetch must not be called with the model as this");
+    assert.equal(capturedThis, globalThis);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("path segments are URL-encoded", async () => {
   const fetchImpl = scriptedFetch([
     ["/v1/dirs/a%2Fb/files", ok({ uid: "x y" }, 201)],

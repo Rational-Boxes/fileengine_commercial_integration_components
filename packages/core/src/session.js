@@ -32,7 +32,13 @@ export class SessionManager {
   constructor(cfg, deps = {}) {
     this.#cfg = { refreshPath: "/v1/auth/refresh", logoutPath: "/v1/auth/token", ...cfg };
     this.#win = deps.win || (typeof window !== "undefined" ? window : undefined);
-    this.#fetch = deps.fetchImpl || (typeof fetch !== "undefined" ? fetch : undefined);
+    // Wrap the global fetch so it is always invoked with the global as its `this` —
+    // calling `this.#fetch(...)` on a stored reference would set `this` to this instance,
+    // which browsers reject with "Illegal invocation". Injected impls are used as-is.
+    this.#fetch = deps.fetchImpl ||
+      (typeof globalThis !== "undefined" && typeof globalThis.fetch === "function"
+        ? (...args) => globalThis.fetch(...args)
+        : undefined);
   }
 
   getToken() { return this.#token; }

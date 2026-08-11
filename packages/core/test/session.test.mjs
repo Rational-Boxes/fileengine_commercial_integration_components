@@ -130,6 +130,27 @@ test("handoff throws with no session and on non-ok", async () => {
   await assert.rejects(sm.handoff(), /handoff failed: 401/);
 });
 
+test("calls the global fetch with the global as `this` (no Illegal invocation)", async () => {
+  // Regression: storing `this.#fetch = fetch` and calling this.#fetch(...) invokes fetch
+  // with `this` = the SessionManager, which browsers reject. With NO injected impl the
+  // wrapper must call the global fetch as a global method.
+  const realFetch = globalThis.fetch;
+  let capturedThis = "unset";
+  globalThis.fetch = function () {
+    capturedThis = this;
+    return Promise.resolve({ ok: true, json: async () => ({ code: "c", expires_in: 60 }) });
+  };
+  try {
+    const sm = new SessionManager(CFG, { win: fakeWin() });   // no fetchImpl -> real global path
+    sm.setSession("tok", 900);
+    await sm.handoff();
+    assert.notEqual(capturedThis, sm, "fetch must not be called with the SessionManager as this");
+    assert.equal(capturedThis, globalThis);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("logout clears the session", () => {
   const sm = new SessionManager(CFG, { win: fakeWin() });
   sm.setSession("t", 900);
