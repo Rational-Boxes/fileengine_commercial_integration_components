@@ -56,6 +56,10 @@ const clientConfig = {
     csai: env.FILEENGINE_CSAI_BASE || 'http://localhost:8092',
     discuss: env.FILEENGINE_DISCUSS_BASE || 'http://localhost:8094',
     bcf: env.FILEENGINE_BCF_BASE || 'http://localhost:8098',
+    // The official FileEngine SPA + WebDAV — the *other* systems, for validating
+    // cross-system deep-links / SSO hand-off from this host app (§5.5).
+    spa: env.FE_SPA_BASE || 'http://localhost:3000',
+    webdav: env.FE_WEBDAV_BASE || 'http://localhost:8088',
   },
   oauthProvider: env.HARNESS_OAUTH_PROVIDER || 'google',
   callbackPath: '/session/callback',

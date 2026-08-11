@@ -54,6 +54,11 @@
       <button id="whoami" class="ghost">GET /v1/whoami</button>
       <button id="tenants" class="ghost">GET /v1/tenants</button>
     </div>
+    <div class="row"><label>Deep-links to the other systems (§5.5)</label>
+      <button id="openSpa" class="ghost">Open FileEngine SPA ↗</button>
+      <button id="openWebdav" class="ghost">Open WebDAV ↗</button>
+      <span class="muted" id="deepHint">selecting a file deep-links to it in the SPA</span>
+    </div>
     <div class="row"><label>Config (/config)</label>
       <pre id="cfg">loading…</pre>
     </div>
@@ -135,9 +140,11 @@ document.getElementById('fbLoad').onclick = () => {
 const preview = document.createElement('fe-document-preview')
 preview.provider = provider
 document.getElementById('fbHost').appendChild(preview)
+let lastSelectedUid = null   // for cross-system deep-links
 fb.addEventListener('fe:select', (e) => {
   out({ 'fe:select': e.detail.uid, name: e.detail.entry?.name })
   // preview/comments/meta/download declared below; closures run on click, after init.
+  lastSelectedUid = e.detail.uid
   preview.open(e.detail.uid)
   comments.open(e.detail.uid)
   meta.open(e.detail.uid)
@@ -171,6 +178,7 @@ search.setAttribute('placeholder', 'Search files…')
 document.getElementById('fbHost').appendChild(search)
 search.addEventListener('fe:result-select', (e) => {
   out({ 'fe:result-select': e.detail.uid, name: e.detail.name })
+  lastSelectedUid = e.detail.uid
   preview.open(e.detail.uid)
   comments.open(e.detail.uid)
   meta.open(e.detail.uid)
@@ -274,6 +282,23 @@ document.getElementById('refresh').onclick = async () => {
   catch (err) { out('refresh failed: ' + err.message) }
 }
 document.getElementById('logout').onclick = () => { session.logout(); out('cleared') }
+
+// Cross-system deep-links (§5.5): open the official FileEngine SPA (and WebDAV) — the
+// *other* systems — to validate hand-off from this external host app. When a file is
+// selected, the SPA link carries it so you land on that document.
+document.getElementById('openSpa').onclick = () => {
+  const base = (cfg.fileengine.spa || '').replace(/\/$/, '')
+  const q = new URLSearchParams({ tenant: cfg.tenant || '' })
+  if (lastSelectedUid) q.set('file', lastSelectedUid)
+  const url = base + (lastSelectedUid ? '/?' + q.toString() : '/')
+  out({ 'deep-link → SPA': url })
+  window.open(url, '_blank', 'noopener')
+}
+document.getElementById('openWebdav').onclick = () => {
+  const url = cfg.fileengine.webdav || ''
+  out({ 'deep-link → WebDAV': url })
+  window.open(url, '_blank', 'noopener')
+}
 
 // Delegated exchange: the harness signs a TEST assertion for the given user and relays
 // FileEngine /v1/auth/exchange; on success the minted token becomes the live session.
