@@ -109,6 +109,27 @@ test("refresh throws on non-ok and with no session", async () => {
   await assert.rejects(sm.refresh(), /refresh failed: 401/);
 });
 
+test("handoff mints a one-time code from the current session", async () => {
+  let calledUrl, authHeader;
+  const fetchImpl = async (url, opts) => {
+    calledUrl = url; authHeader = opts.headers.Authorization;
+    return { ok: true, json: async () => ({ code: "hc-123", expires_in: 60 }) };
+  };
+  const sm = new SessionManager(CFG, { win: fakeWin(), fetchImpl });
+  sm.setSession("tok-1", 900);
+  const out = await sm.handoff();
+  assert.deepEqual(out, { code: "hc-123", expires_in: 60 });
+  assert.equal(calledUrl, "https://files.example.com/v1/auth/sso/handoff");
+  assert.equal(authHeader, "Bearer tok-1");
+});
+
+test("handoff throws with no session and on non-ok", async () => {
+  const sm = new SessionManager(CFG, { win: fakeWin(), fetchImpl: async () => ({ ok: false, status: 401 }) });
+  await assert.rejects(sm.handoff(), /no session/);
+  sm.setSession("tok-1", 900);
+  await assert.rejects(sm.handoff(), /handoff failed: 401/);
+});
+
 test("logout clears the session", () => {
   const sm = new SessionManager(CFG, { win: fakeWin() });
   sm.setSession("t", 900);

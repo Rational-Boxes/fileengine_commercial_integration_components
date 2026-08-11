@@ -109,4 +109,20 @@ export class SessionManager {
     this.setSession(d.token, d.expires_in);
     return this.#token;
   }
+
+  /**
+   * Mint a one-time SSO hand-off code from the current session (§5.5), for deep-linking
+   * the user into the official FileEngine SPA carrying their session. The SPA redeems it
+   * at POST /v1/auth/sso/redeem. Requires an active session.
+   * @returns {Promise<{code: string, expires_in: number}>}
+   */
+  async handoff() {
+    if (!this.#token) throw new Error("no session to hand off");
+    const r = await this.#fetch(this.#cfg.bridgeBase + "/v1/auth/sso/handoff", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + this.#token },
+    });
+    if (!r.ok) throw new Error("handoff failed: " + r.status);
+    return r.json();
+  }
 }

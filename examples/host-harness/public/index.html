@@ -286,13 +286,19 @@ document.getElementById('logout').onclick = () => { session.logout(); out('clear
 // Cross-system deep-links (§5.5): open the official FileEngine SPA (and WebDAV) — the
 // *other* systems — to validate hand-off from this external host app. When a file is
 // selected, the SPA link carries it so you land on that document.
-document.getElementById('openSpa').onclick = () => {
+document.getElementById('openSpa').onclick = async () => {
   const base = (cfg.fileengine.spa || '').replace(/\/$/, '')
-  const q = new URLSearchParams({ tenant: cfg.tenant || '' })
-  if (lastSelectedUid) q.set('file', lastSelectedUid)
-  const url = base + (lastSelectedUid ? '/?' + q.toString() : '/')
-  out({ 'deep-link → SPA': url })
-  window.open(url, '_blank', 'noopener')
+  if (!provider.hasSession()) return out('sign in / exchange first — SSO hand-off needs a session')
+  try {
+    // §5.5: mint a one-time hand-off code from THIS session, deep-link into the SPA /sso
+    // landing with it (+ the target file); the SPA redeems it for its own session.
+    const { code } = await session.handoff()
+    const q = new URLSearchParams({ code })
+    if (lastSelectedUid) q.set('target', lastSelectedUid)
+    const url = base + '/sso?' + q.toString()
+    out({ 'deep-link → SPA (SSO hand-off)': url.replace(/code=[^&]+/, 'code=***'), target: lastSelectedUid || '(none)' })
+    window.open(url, '_blank', 'noopener')
+  } catch (e) { out('SSO hand-off failed: ' + e.message) }
 }
 document.getElementById('openWebdav').onclick = () => {
   const url = cfg.fileengine.webdav || ''
