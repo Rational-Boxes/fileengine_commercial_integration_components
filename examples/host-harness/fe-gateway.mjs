@@ -1,0 +1,73 @@
+// FileEngine dev gateway — MIT.
+// A transparent reverse proxy that fronts all the FileEngine services under path
+// prefixes on ONE origin, so the embedding test needs a single services tunnel instead
+// of one per service. It is a DIFFERENT origin than the harness, so the browser→service
+// path is still genuinely cross-origin (CORS + the exchange are exercised for real): the
+// gateway forwards the browser's Origin/Authorization/X-Tenant to each service and
+// forwards the service's CORS response back, unchanged.
+//
+//   /api/*          -> http_bridge        (:8090)   e.g. /api/v1/dirs/{uid}, /api/v1/auth/exchange
+//   /csai/*         -> convert_search_ai  (:8092)   e.g. /csai/search
+//   /discuss/*      -> discussion         (:8094)   REST + WebSocket (/discuss/files/{uid}/live)
+//   /bcf/*          -> bcf_service        (:8098)
+//   /provisioning/* -> provisioning       (:8100)
+//
+// Zero dependencies (node:http + node:net for the WebSocket upgrade).
+import { createServer, request as httpRequest } from 'node:http'
+import { connect as netConnect } from 'node:net'
+
+const env = process.env
+const PORT = Number(env.GATEWAY_PORT || 8199)
+
+const ROUTES = [
+  { prefix: '/api',          target: env.FE_BRIDGE  || 'http://localhost:8090' },
+  { prefix: '/csai',         target: env.FE_CSAI    || 'http://localhost:8092' },
+  { prefix: '/discuss',      target: env.FE_DISCUSS || 'http://localhost:8094' },
+  { prefix: '/bcf',          target: env.FE_BCF     || 'http://localhost:8098' },
+  { prefix: '/provisioning', target: env.FE_PROV    || 'http://localhost:8100' },
+]
+
+function matchRoute(path) {
+  for (const r of ROUTES) if (path === r.prefix || path.startsWith(r.prefix + '/')) return r
+  return null
+}
+const strip = (path, prefix) => path.slice(prefix.length) || '/'
+
+const server = createServer((req, res) => {
+  if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"status":"ok"}') }
+  const route = matchRoute(req.url)
+  if (!route) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"error":"no gateway route"}') }
+  const t = new URL(route.target)
+  const up = httpRequest({
+    hostname: t.hostname, port: t.port, method: req.method,
+    path: strip(req.url, route.prefix),
+    headers: { ...req.headers, host: t.host },   // forwards Origin / Authorization / X-Tenant verbatim
+  }, (upRes) => {
+    res.writeHead(upRes.statusCode || 502, upRes.headers)   // forwards the service's CORS headers back
+    upRes.pipe(res)
+  })
+  up.on('error', (e) => { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'upstream', detail: String(e) })) })
+  req.pipe(up)
+})
+
+// WebSocket (discussion-live): raw socket bridge, prefix stripped.
+server.on('upgrade', (req, socket, head) => {
+  const route = matchRoute(req.url)
+  if (!route) return socket.destroy()
+  const t = new URL(route.target)
+  const upstream = netConnect(Number(t.port), t.hostname, () => {
+    const headers = { ...req.headers, host: t.host }
+    const lines = Object.entries(headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+    upstream.write(`${req.method} ${strip(req.url, route.prefix)} HTTP/1.1\r\n${lines.join('\r\n')}\r\n\r\n`)
+    if (head && head.length) upstream.write(head)
+    socket.pipe(upstream)
+    upstream.pipe(socket)
+  })
+  upstream.on('error', () => socket.destroy())
+  socket.on('error', () => upstream.destroy())
+})
+
+server.listen(PORT, () => {
+  console.log(`[fe-gateway] http://localhost:${PORT}  (one origin -> all FileEngine services)`)
+  for (const r of ROUTES) console.log(`[fe-gateway]   ${r.prefix.padEnd(14)} -> ${r.target}`)
+})
