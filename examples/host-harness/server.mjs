@@ -111,7 +111,11 @@ const server = createServer(async (req, res) => {
     if (!body || !body.sub) {
       return send(res, 400, JSON.stringify({ error: 'sub (delegated username) required' }), 'application/json')
     }
-    const assertion = signAssertion({ sub: body.sub, tenant: body.tenant, tokenType: body.token_type })
+    // amr: from the request, else HARNESS_ASSERT_AMR (e.g. "pwd,otp" to simulate an
+    // integration that already 2FA'd the user against the shared directory — §5.5 trust).
+    const amr = Array.isArray(body.amr) ? body.amr
+      : (env.HARNESS_ASSERT_AMR ? env.HARNESS_ASSERT_AMR.split(',').map((s) => s.trim()).filter(Boolean) : undefined)
+    const assertion = signAssertion({ sub: body.sub, tenant: body.tenant, tokenType: body.token_type, amr })
     const form = new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion,

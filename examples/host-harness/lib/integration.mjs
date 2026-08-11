@@ -24,7 +24,7 @@ export function loadOrCreateKeypair(privPath) {
 
 // Build a signer bound to an issuer/audience/private key. `now` is injectable for tests.
 export function makeSigner({ issuer, audience, privatePem, ttl = 120 }) {
-  return function signAssertion({ sub, tenant, tokenType = 'delegated' }, now = Math.floor(Date.now() / 1000)) {
+  return function signAssertion({ sub, tenant, tokenType = 'delegated', amr }, now = Math.floor(Date.now() / 1000)) {
     const header = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
     const payload = b64url(JSON.stringify({
       iss: issuer,
@@ -35,6 +35,10 @@ export function makeSigner({ issuer, audience, privatePem, ttl = 120 }) {
       jti: randomUUID(),    // single-use — a replayed jti is refused by the bridge
       tenant: tenant || '',
       token_type: tokenType,   // 'delegated' (default) | 'service'
+      // §5.5 2FA trust: assert the auth methods used to authenticate the user against the
+      // shared directory (RFC 8176). A method like "otp"/"email" propagates the 2FA trust
+      // into the minted session, so a deep-link into an MFA tenant isn't re-challenged.
+      ...(Array.isArray(amr) && amr.length ? { amr } : {}),
     }))
     const signingInput = header + '.' + payload
     const sig = createSign('RSA-SHA256').update(signingInput).end().sign(privatePem)
