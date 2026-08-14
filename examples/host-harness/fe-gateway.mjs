@@ -9,9 +9,14 @@
 //   /api/*            -> http_bridge        (:8090)   e.g. /api/v1/dirs/{uid}, /api/v1/auth/exchange
 //   /csai/*           -> convert_search_ai  (:8092)   e.g. /csai/search, /csai/v1/onlyoffice/config
 //   /discuss/*        -> discussion         (:8094)   REST + WebSocket (/discuss/files/{uid}/live)
-//   /bcf/*            -> bcf_service        (:8098)
+//   /bcf/*            -> bcf_service        (:8098)   prefix FORWARDED (router is mounted under /bcf)
 //   /folder-actions/* -> folder_actions     (:8099)   classifier-sets + notify-templates admin API
 //   /provisioning/*   -> provisioning       (:8100)
+//
+// The gateway strips its prefix before forwarding, because each service mounts its routes
+// at root (mirroring the SPA's Vite proxy `rewrite`). The exception is bcf_service, whose
+// APIRouter itself declares prefix="/bcf" (its Vite proxy has NO rewrite) — so that route
+// forwards the /bcf prefix verbatim (strip: false).
 //
 // (ONLYOFFICE Document Server (:8080) and WebDAV (:8088) are NOT fronted here — their
 //  absolute paths / verbs can't sit behind a path prefix, so each keeps its own tunnel.)
@@ -23,11 +28,13 @@ import { connect as netConnect } from 'node:net'
 const env = process.env
 const PORT = Number(env.GATEWAY_PORT || 8199)
 
+// strip: true (default) removes the gateway prefix before forwarding (service mounts at
+// root); false forwards the prefix verbatim (service's own router is mounted under it).
 const ROUTES = [
   { prefix: '/api',            target: env.FE_BRIDGE  || 'http://localhost:8090' },
   { prefix: '/csai',           target: env.FE_CSAI    || 'http://localhost:8092' },
   { prefix: '/discuss',        target: env.FE_DISCUSS || 'http://localhost:8094' },
-  { prefix: '/bcf',            target: env.FE_BCF     || 'http://localhost:8098' },
+  { prefix: '/bcf',            target: env.FE_BCF     || 'http://localhost:8098', strip: false },
   { prefix: '/folder-actions', target: env.FE_FA      || 'http://localhost:8099' },
   { prefix: '/provisioning',   target: env.FE_PROV    || 'http://localhost:8100' },
 ]
@@ -36,7 +43,9 @@ function matchRoute(path) {
   for (const r of ROUTES) if (path === r.prefix || path.startsWith(r.prefix + '/')) return r
   return null
 }
-const strip = (path, prefix) => path.slice(prefix.length) || '/'
+// Path sent upstream: strip the gateway prefix unless the route opts out (strip: false),
+// in which case the service expects its own prefix and we forward the URL verbatim.
+const upstreamPath = (route, url) => route.strip === false ? url : (url.slice(route.prefix.length) || '/')
 
 const server = createServer((req, res) => {
   if (req.url === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"status":"ok"}') }
@@ -45,7 +54,7 @@ const server = createServer((req, res) => {
   const t = new URL(route.target)
   const up = httpRequest({
     hostname: t.hostname, port: t.port, method: req.method,
-    path: strip(req.url, route.prefix),
+    path: upstreamPath(route, req.url),
     headers: { ...req.headers, host: t.host },   // forwards Origin / Authorization / X-Tenant verbatim
   }, (upRes) => {
     res.writeHead(upRes.statusCode || 502, upRes.headers)   // forwards the service's CORS headers back
@@ -63,7 +72,7 @@ server.on('upgrade', (req, socket, head) => {
   const upstream = netConnect(Number(t.port), t.hostname, () => {
     const headers = { ...req.headers, host: t.host }
     const lines = Object.entries(headers).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-    upstream.write(`${req.method} ${strip(req.url, route.prefix)} HTTP/1.1\r\n${lines.join('\r\n')}\r\n\r\n`)
+    upstream.write(`${req.method} ${upstreamPath(route, req.url)} HTTP/1.1\r\n${lines.join('\r\n')}\r\n\r\n`)
     if (head && head.length) upstream.write(head)
     socket.pipe(upstream)
     upstream.pipe(socket)
