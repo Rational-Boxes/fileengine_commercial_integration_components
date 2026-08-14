@@ -6,11 +6,15 @@
 // gateway forwards the browser's Origin/Authorization/X-Tenant to each service and
 // forwards the service's CORS response back, unchanged.
 //
-//   /api/*          -> http_bridge        (:8090)   e.g. /api/v1/dirs/{uid}, /api/v1/auth/exchange
-//   /csai/*         -> convert_search_ai  (:8092)   e.g. /csai/search
-//   /discuss/*      -> discussion         (:8094)   REST + WebSocket (/discuss/files/{uid}/live)
-//   /bcf/*          -> bcf_service        (:8098)
-//   /provisioning/* -> provisioning       (:8100)
+//   /api/*            -> http_bridge        (:8090)   e.g. /api/v1/dirs/{uid}, /api/v1/auth/exchange
+//   /csai/*           -> convert_search_ai  (:8092)   e.g. /csai/search, /csai/v1/onlyoffice/config
+//   /discuss/*        -> discussion         (:8094)   REST + WebSocket (/discuss/files/{uid}/live)
+//   /bcf/*            -> bcf_service        (:8098)
+//   /folder-actions/* -> folder_actions     (:8099)   classifier-sets + notify-templates admin API
+//   /provisioning/*   -> provisioning       (:8100)
+//
+// (ONLYOFFICE Document Server (:8080) and WebDAV (:8088) are NOT fronted here — their
+//  absolute paths / verbs can't sit behind a path prefix, so each keeps its own tunnel.)
 //
 // Zero dependencies (node:http + node:net for the WebSocket upgrade).
 import { createServer, request as httpRequest } from 'node:http'
@@ -20,11 +24,12 @@ const env = process.env
 const PORT = Number(env.GATEWAY_PORT || 8199)
 
 const ROUTES = [
-  { prefix: '/api',          target: env.FE_BRIDGE  || 'http://localhost:8090' },
-  { prefix: '/csai',         target: env.FE_CSAI    || 'http://localhost:8092' },
-  { prefix: '/discuss',      target: env.FE_DISCUSS || 'http://localhost:8094' },
-  { prefix: '/bcf',          target: env.FE_BCF     || 'http://localhost:8098' },
-  { prefix: '/provisioning', target: env.FE_PROV    || 'http://localhost:8100' },
+  { prefix: '/api',            target: env.FE_BRIDGE  || 'http://localhost:8090' },
+  { prefix: '/csai',           target: env.FE_CSAI    || 'http://localhost:8092' },
+  { prefix: '/discuss',        target: env.FE_DISCUSS || 'http://localhost:8094' },
+  { prefix: '/bcf',            target: env.FE_BCF     || 'http://localhost:8098' },
+  { prefix: '/folder-actions', target: env.FE_FA      || 'http://localhost:8099' },
+  { prefix: '/provisioning',   target: env.FE_PROV    || 'http://localhost:8100' },
 ]
 
 function matchRoute(path) {
