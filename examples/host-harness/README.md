@@ -33,6 +33,15 @@ externally-reachable HTTPS origin distinct from FileEngine's:
 - **Deep-link SSO** into the official client.
 - **CORS allow-listing** and à la carte access (only enabled modules reachable).
 
+## `<fe-media-share>` (media links)
+
+`/media.html?src=<media share URL>` embeds a shared video the way a host with no
+build step would: the script is loaded from the **media origin**
+(`/media/v1/embed/fe-media-share.js`) and there is **no `<fe-session>`**. A gated
+link renders as a framed player (the gate on FileEngine's origin); an open link
+renders in-page. The event log shows what the host learns — never an address.
+The live end-to-end check is `frontend/e2e/media-embed.mjs`.
+
 ## Architecture (minimal)
 
 A tiny **Node built-in-`http`** server (no `npm install`) that serves:
