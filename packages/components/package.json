@@ -1,7 +1,7 @@
 {
   "name": "@fileengine/embed-components",
   "version": "0.1.0",
-  "description": "FileEngine embedding kit — à la carte visual Web Components (<fe-file-browser>, …). Each is an independent ES module that discovers <fe-session> at runtime and imports no other component.",
+  "description": "FileEngine embedding kit \u2014 \u00e0 la carte visual Web Components (<fe-file-browser>, \u2026). Each is an independent ES module that discovers <fe-session> at runtime and imports no other component. <fe-media-share> is the exception: it needs no <fe-session>, only a share URL.",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -11,11 +11,16 @@
     "./search": "./src/fe-search.js",
     "./comments": "./src/fe-comments.js",
     "./metadata": "./src/fe-metadata.js",
-    "./download": "./src/fe-download.js"
+    "./download": "./src/fe-download.js",
+    "./media-share": "./src/fe-media-share.js"
   },
-  "files": ["src"],
+  "files": [
+    "src"
+  ],
   "scripts": {
     "test": "node --test test/*.test.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: MIT
+  Host-harness page for <fe-media-share> (MEDIA_SHARE.md §9) — the one component
+  that needs NO <fe-session>. Open as  /media.html?src=<media share URL>.
+
+  The script comes from the MEDIA ORIGIN itself (/media/v1/embed/...), the way a
+  host that cannot add an npm dependency embeds it: one tag, one element.
+  The event log shows what a host learns — never a viewer's address.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Host harness — fe-media-share</title>
+  <style>
+    body { font: 15px/1.4 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+    #log { font: 12px monospace; background: #f4f5f7; padding: .5rem; min-height: 4rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>A host page embedding a shared video</h1>
+  <p>No <code>&lt;fe-session&gt;</code> on this page — just the share URL.</p>
+  <div id="slot"></div>
+  <h2>Events the host sees</h2>
+  <div id="log"></div>
+  <script type="module">
+    const src = new URLSearchParams(location.search).get('src') || ''
+    const log = (s) => { document.getElementById('log').textContent += s + '\n' }
+    let origin = ''
+    try { origin = new URL(src).origin } catch { log('add ?src=<media share URL>') }
+    if (origin) {
+      const el = document.createElement('fe-media-share')
+      el.setAttribute('src', src)
+      el.setAttribute('width', '720')
+      for (const t of ['fe:media-ready', 'fe:media-play', 'fe:media-ended', 'fe:media-gate',
+                       'fe:media-identified', 'fe:media-error']) {
+        el.addEventListener(t, (e) => { window.__events = (window.__events || []).concat([{ type: t, detail: e.detail }]); log(`${t} ${JSON.stringify(e.detail)}`) })
+      }
+      document.getElementById('slot').append(el)
+      await import(`${origin}/media/v1/embed/fe-media-share.js`)
+    }
+  </script>
+</body>
+</html>
