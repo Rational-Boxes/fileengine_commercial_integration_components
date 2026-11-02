@@ -58,6 +58,9 @@ prompt sets and showing extracted values with evidence.
 | X9 | Extraction: integration prompt sets, `<fe-extraction>` | convert_search_ai, commercial_embedding | P2 (after extraction P3) |
 | X10 | `<fe-document-drawer>`, `<fe-version-diff>` | commercial_embedding, difference_service | P3 |
 | X11 | Release hygiene: types, publishing, contract tests, doc fixes | commercial_embedding, all | P1 (small) |
+| X12 | "Open in <integration>" links in the official client | http_bridge (registry), frontend | P2 |
+| X13 | Drive connection for embedding apps | ldap_manager, commercial_embedding | P3 |
+| X14 | Private subtrees and folder ACL policy | file_engine_core, commercial_provisioning | **P1**, core |
 
 P1 is what Canopy needs for its Docs view and deliverable pipeline. Each feature is
 shippable on its own; dependencies are noted per section.
@@ -73,7 +76,24 @@ store, so delegated exchange works for every user without a human tenant admin.
 The integration's user store stays the source of truth for who exists; FileEngine's
 LDAP becomes a projection of it within a bounded scope.
 
-### 3.2 Shape
+### 3.2 Directory model (unchanged by X1)
+
+X1 works inside the established directory model and adds nothing to it
+(`docker_unified/LDAP_REFERENCE.md`, `scripts/Ansible/docs/TENANT_BOUNDARY.md`):
+
+- Users are **global** `inetOrgPerson` entries under `ou=users`, with `uid` equal
+  to `mail` (the email address). One user can belong to several tenants.
+- A tenant is `ou=<tenant>,ou=tenants,<base dn>`. Roles are `groupOfNames` entries
+  beneath it; the role name is the group `cn`; `member` holds full user DNs.
+- **Membership in a tenant is holding at least one group beneath its `ou`.** Roles
+  are the `cn`s held in that tenant only, never a union across tenants.
+
+Consequences for X1: a user is identified by email, not by an integration id;
+granting the first role in a tenant makes the user a member of it, and removing
+the last role ends membership; and nothing X1 does in tenant T may change the
+user's global entry in a way that affects their other tenants.
+
+### 3.3 Shape
 
 New router in ldap_manager: `/v1/integration/...`. Authenticated by an integration
 **service** token (`svc:true`, `amr:["integration"]`) carrying a new capability
@@ -89,42 +109,54 @@ registry as provisioning (`SPECIFICATIONS.md` §14.1, §14.7):
 
 | Method + path | Body / effect |
 | --- | --- |
-| `PUT /v1/integration/tenants/{t}/users/{external_id}` | Upsert `{uid?, email, given_name, surname, display_name, login: "delegated_only" \| "invite", roles?: [..]}`. Idempotent by `(integration, tenant, external_id)`. Returns the directory `uid` to use as `sub`. |
-| `DELETE /v1/integration/tenants/{t}/users/{external_id}` | Deactivate: remove from every prefixed role and disable login. Never deletes the entry (files keep an owner). `?purge=true` only if the operator enables it. |
-| `GET /v1/integration/tenants/{t}/users?external_id=&since=` | List users this integration manages. |
-| `PUT /v1/integration/tenants/{t}/roles/{role}` | Create a prefixed role (idempotent). |
-| `DELETE /v1/integration/tenants/{t}/roles/{role}` | Delete a prefixed role it created. |
-| `PUT /v1/integration/tenants/{t}/roles/{role}/members` | Replace the full member list: `{external_ids: [..]}`. Idempotent; returns added/removed. |
-| `POST /v1/integration/tenants/{t}/sync` | Bulk form of the above in one transaction-like call, with `dry_run`. For nightly reconciliation. |
+| `PUT /v1/integration/users/{email}` | Ensure the global entry exists: `{given_name, surname, display_name, invite?: {tenant}}`. Creates it if absent (no usable password, as the tenant play does for new accounts). If it exists, changes nothing except name fields on entries this integration created. Returns the `uid` (the email) to use as `sub`. |
+| `GET /v1/integration/tenants/{t}/users?role_prefix=&since=` | Users holding at least one of this integration's roles in T. |
+| `DELETE /v1/integration/tenants/{t}/users/{email}` | Remove the user from every **prefixed** role in T. If those were their only groups in T, their membership in T ends (boundary rule); their entry and their other tenants are untouched. Never deletes the entry. |
+| `PUT /v1/integration/tenants/{t}/roles/{role}` | Create a prefixed role group under `ou=<t>` (idempotent), using ldap_manager's existing placeholder-member convention for an empty `groupOfNames`. |
+| `DELETE /v1/integration/tenants/{t}/roles/{role}` | Delete a prefixed role group it created. |
+| `PUT /v1/integration/tenants/{t}/roles/{role}/members` | Replace the member list: `{emails: [..]}`. Idempotent; returns added and removed. |
+| `POST /v1/integration/tenants/{t}/sync` | Bulk form of the above for one tenant, with `dry_run`. For nightly reconciliation. |
 
-### 3.3 Rules
+### 3.4 Rules
 
-- `login: "delegated_only"` (default) creates the user with no usable password and
-  marks the entry so `/v1/auth/token` (password) and OAuth refuse it. Sessions come
-  only from the integration's exchange. `invite` uses the existing invite mail flow
-  for users who should also use the official client.
-- Users created this way carry a `managedBy=<integration_id>` attribute. The official
-  client shows them as externally managed and refuses local edits to managed roles,
-  mirroring provisioning's `managed_by` on folders.
-- A user the integration did not create (an existing tenant user) can be **adopted**
-  by `PUT` with that user's `uid` only if the operator sets `IDN_ALLOW_ADOPT`;
-  otherwise `409 not_managed`.
+- **Tenant scope.** Every tenant-scoped call checks that `ou=<t>,ou=tenants` exists
+  and is within `idn_tenants`. Role operations are confined to groups beneath that
+  `ou` whose `cn` starts with `idn_role_prefix`. X1 never touches built-in groups
+  (`administrators`, `system_admin`, `users`, `contributors`, `share_external`)
+  unless the operator lists them in `idn_builtin_roles`.
+- **Global entries are shared.** X1 never sets or clears a password, disables an
+  account, or deletes an entry: those would affect the user's other tenants. Ending
+  access is done only by removing groups in T. An entry X1 created carries
+  `managedBy=<integration_id>` so the official client can show it as externally
+  created; that marker grants the integration no rights over the user elsewhere.
+- **Existing users.** If the email already exists (a person who is in another tenant,
+  or already in T), X1 simply adds prefixed groups in T. No adoption step is needed,
+  because nothing global is changed.
+- **Sign-in.** Users created without a password sign in only through the
+  integration's exchange, or through OAuth if the deployment maps their email. An
+  `invite` sends the existing invite mail for users who should also use the official
+  client.
 - Role changes take effect on the user's next token refresh (at most 15 minutes),
-  the existing re-mint-from-directory behaviour. A `POST .../users/{external_id}/revoke-sessions`
+  the existing re-mint-from-directory behaviour. A `POST .../tenants/{t}/users/{email}/revoke-sessions`
   ends live sessions at once (uses the existing jti revocation list).
 - Every call emits `identity.*` audit entries (category `user`, `source_iface: rest`).
 
-### 3.4 Tenant creation
+### 3.5 Tenant creation
 
-Out of scope here. Tenants are created by the deployment's tenant play
-(`ldap_manager/src/ldap_manager/routers/tenant_onboarding.py`). If an integration
-must create tenants itself (a multi-tenant Canopy, Canopy open question
-"Tenancy"), that is a separate proposal; record the need, do not fold it in.
+Out of scope here. Owner's architectural note (2026-11-02): Green Canary,
+FileEngine and Canopy share one multi-tenancy model. Tenant context is selected
+by header (subdomain optional), and a tenant is defined by its LDAP structure;
+FileEngine creates the tenant's database tables on first access when that
+structure exists. X1 therefore never creates tenants: it operates inside a tenant
+whose LDAP structure is already in place, and `idn_tenants` is validated against
+LDAP per call. Creating that structure stays with whoever owns tenant creation
+(today the deployment's tenant play, `scripts/Ansible/docs/TENANT_CREATION.md`,
+or `docker_unified/scripts/new-tenant.sh`).
 
-### 3.5 Canopy use
+### 3.6 Canopy use
 
-`Person` maps to a managed user (`external_id` = Person id). `TeamAssignment`
-rows project onto prefixed roles, for example `canopy-<project>-<function>` and
+`Person.email` is the directory `uid`. `TeamAssignment` rows project onto prefixed
+role groups in the tenant's `ou`, for example `canopy-<project>-<function>` and
 `canopy-<project>-all`. Canopy calls `PUT .../roles/{role}/members` when
 assignments change and runs `/sync` nightly.
 
@@ -388,6 +420,10 @@ Canary.
 - **Contract tests** (`SPECIFICATIONS.md` §11, not yet present): one test per REST
   or WebSocket call the kit makes, run against a live stack, failing on drift.
 - **Doc fixes found in the 2026-11-02 review:**
+  - `file_engine_core/SPECIFICATIONS.md` ("ACL principals") says "a matching DENY
+    always wins over any ALLOW". The code (`acl_manager.cpp`,
+    `calculate_effective_permissions`) evaluates by tier, most specific first, and a
+    deny wins only within its tier. Update the spec to match.
   - `INTEGRATORS_GUIDE.md` §2 says the exchange mints an "IP-bound session token";
     `aip` is stamped by the bridge but only checked by provisioning. Either enforce
     it in the bridge for service tokens or reword.
@@ -400,39 +436,156 @@ Canary.
 
 ---
 
-## 14. Security notes
+## 14. X12: "Open in <integration>" links in the official client
+
+### 14.1 Goal
+
+Users of an embedding application are also ordinary FileEngine users who work in the
+official client for other storage. The embedding app can already send a user into the
+client with a one-time sign-in hand-off (`SessionManager.handoff()`, §5.5). The reverse
+is missing: from a file or folder the integration manages, the client cannot lead back
+to the integration's record (for Canopy, the deliverable or credit).
+
+### 14.2 Shape
+
+- The integration registry (§14.1 of the kit spec) gains optional **link templates**
+  per integration: `{label: "Open in Canopy", node: "https://canopy.example.com/t/{tenant}/deliverables/{x.canopy.deliverable}", folder: "…/credits/{x.canopy.credit}"}`.
+  Placeholders are the tenant and X3 integration-owned metadata keys only.
+- The official client shows the link in the file drawer and folder header when every
+  placeholder resolves on that node. No link is shown otherwise.
+- The client opens the link in a new tab. Sign-in on the integration side is the
+  integration's concern (it can use the same directory and SSO).
+- Operator-configured only (deployment CLI), never set by end users, since it puts an
+  outside URL in front of users.
+
+## 15. X13: Drive connection for embedding apps
+
+Users can already create WebDAV credentials and mount scripts in the official client
+(`frontend/src/components/WebDavCredentials.vue`, `ldap_manager`
+`/v1/me/service-credentials`). An embedding app should not duplicate credential
+management, but should help a user mount **its** folder.
+
+- **Minimum (no FileEngine change):** the embedding app shows the drive address of a
+  folder (`https://<tenant>-drive.<base>/<path>`) and a hand-off link to the client's
+  credential page.
+- **`<fe-drive-connect folder="<uid>">`** (MIT, clean-room, kit spec §3): resolves the
+  folder's path, generates non-secret Bash and PowerShell mount scripts pointing at
+  it, and links to the credential page via hand-off. Lists the user's existing
+  `webdav` credentials (key id, label, last used) so the user can pick one.
+- **ldap_manager:** add the CORS allow-list other services have, so the component can
+  list credentials from the host origin; accept `expires_at` and `allowed_cidrs` on
+  create (both already stored by `service_cred.py`).
+- **Optional, later:** a credential bound to one folder, so the drive shows only that
+  subtree. Path-pointed mounts cover most of the need without it.
+
+## 16. X14: Private subtrees and folder ACL policy (core)
+
+### 16.1 Problem
+
+FileEngine is read-by-default within a tenant: if no ACL tier decides the read bit,
+read is allowed (`acl_manager.cpp`, `calculate_effective_permissions`; `default_read_`
+is fixed to `true` with no configuration switch). Embedding apps that keep their own
+access model (Canopy's `own_discipline`) need their spaces private, while the rest of
+the tenant keeps today's behaviour.
+
+The working pattern today is the private-home shape: on the space root, `everyone`
+DENY read and role ALLOW rules, both with `ACL_INHERIT`. Role rules decide before the
+`everyone` tier, so members read and others are refused. It leaves four gaps:
+
+1. **Moves.** `FileSystem::move` keeps the file's own rules. A file moved in from a
+   home folder or another space keeps rules that are wrong for its new place.
+2. **Existing descendants.** Inheritance is copied at creation only. Changing a
+   folder's rules does not reach existing files; the bridge's recursive walk can time
+   out part-way (`PROPOSAL_subtree_acl_apply.md`).
+3. **Creator rights.** A creator gets full control including `MANAGE_ACL`, so any
+   uploader can widen access to their file.
+4. **Service readers.** Services that read content (csai indexing and previews,
+   difference_service, folder_actions) hold no tenant roles. Whether they can read
+   inside an `everyone`-denied subtree must be confirmed and, if needed, solved once
+   for private homes and spaces alike.
+
+### 16.2 Proposal
+
+1. **`private` folder flag, evaluated at check time.** A folder attribute (set by
+   provisioning, readable by everyone, changeable only with `MANAGE_ACL` on the folder
+   and by tenant administrators). When checking a node, if any ancestor up to the
+   tenant root is `private`, the read-by-default fall-through is off for that check.
+   Explicit rules still apply as today. Because it is evaluated, it covers moved-in
+   and existing files with no rewrite. Ancestors are already walked for traversal and
+   deleted-ancestor checks; cache the nearest private ancestor per node with the ACL
+   cache.
+2. **Folder ACL policy: `on_move_in: replace`.** Optional per folder. A file or
+   folder moved in has its rules replaced by the destination's inheritable rules plus
+   its owner's default rights, exactly as if created there. Default `keep` (today's
+   behaviour).
+3. **Folder ACL policy: `creator_rights`.** Optional per folder: the default rights a
+   creator receives on new items inside it. For spaces: read, write, delete, version
+   rights, but not `MANAGE_ACL`. Default: today's full control.
+4. **Subtree ACL apply.** Adopt option A of `PROPOSAL_subtree_acl_apply.md` (a subtree
+   form of grant and revoke, executed in the database). Provisioning's `enforce` mode
+   and X7 parameter updates use it.
+5. **Service readers.** Either list the content services' principals in a reserved
+   tenant role that blueprints and home provisioning grant read to, or give
+   `FILEENGINE_SERVICE_PRINCIPALS` read through `private` subtrees. Decide once
+   (open question 9).
+
+Provisioning gains blueprint keys for 1 to 3 (`private: true`, `acl_policy:
+{on_move_in, creator_rights}`), and the official client shows a private folder's
+status in the drawer so tenant users understand why a folder they can see the name of
+will not open.
+
+### 16.3 Canopy fallback until X14 lands
+
+Canopy re-applies its folder rules to a file on every `file.created` and `file.moved`
+webhook inside a space, using its integration service principal (which needs
+`MANAGE_ACL` on spaces). This is a race (a file is exposed until the webhook runs, and
+until the next sweep if the event is lost), so X14 is P1.
+
+---
+
+## 17. Security notes
 
 - Every new server-to-server surface (X1, X2.3, X7, X8, X9) uses the existing
   integration registry, short single-use assertions, capability claims, scope
   claims and `aip` enforcement. No new credential type.
 - X1 is the most sensitive: it creates identities. Keep it opt-in per deployment
   (`IDN_ENABLED`), restricted to a role prefix, unable to touch `administrators`,
-  and fully audited. Deactivate rather than delete.
+  and fully audited. It removes access only by removing groups in one tenant, never
+  by changing a user's global entry, so it cannot affect a user's other tenants.
 - X3 must be enforced in the core, not a door, or the MCP and WebDAV doors bypass it.
 - X2.2 read grants are per file and version, short-lived and audited.
 - X8 links keep a human owner (`on_behalf_of`) so drops are attributable.
+- X12 link templates are operator-configured only; they put an outside URL in front of users.
+- X14 narrows access only: it removes a default grant and never adds one, so a mistake fails closed (a file nobody can read) rather than open.
 
-## 15. Open questions for the owner
+## 18. Open questions for the owner
 
 1. **X1 placement.** ldap_manager (proposed) or a new identity lane in
    commercial_provisioning? ldap_manager already owns LDAP writes and invites.
-2. **X1 purge.** Should `DELETE ?purge=true` exist at all, given erasure exists for
-   files but users own files?
+2. **X1 global entries.** X1 creates global user entries but never removes them.
+   Is an orphaned entry (no groups in any tenant) cleaned up by an existing process,
+   or does one need adding?
 3. **X3 enforcement point.** Core-level enforcement needs the integration identity in
    the gRPC `AuthenticationContext` (a claim such as `integration=<id>`). Acceptable?
 4. **X4 metadata per version.** Expose `GetMetadataForVersion` on the bridge?
 5. **X8.** Is integration-minted drop links acceptable under the share-link threat
    model (`share_service/design_documents/OUTSIDE_SHARE_LINKS.md`), given the link
    owner is delegated rather than present?
-6. **Order.** Proposed: X11 and X1 first (unblocks any integration), then X5, X4, X2,
-   X3, X6, then P2 and P3.
+6. **Order.** Proposed: X11 and X1 first (unblocks any integration), then X14, X5,
+   X4, X2, X3, X6, then P2 and P3.
+7. **X14 `private` flag vs. tenant setting.** Is a per-folder flag right, or should a
+   tenant be able to choose private-by-default for all new content?
+8. **X14 move-in policy.** Should `replace` be the default inside private folders?
+9. **X14 service readers.** Reserved role granted read, or service principals exempt
+   from the private fall-through? Private homes need the same answer.
 
-## 16. Phases
+## 19. Phases
 
 | Phase | Contents | Unblocks for Canopy |
 | --- | --- | --- |
-| A | X11, X1 | Users can be signed in by delegated exchange |
+| A | X11, X1, X14 | Users can be signed in by delegated exchange; spaces are private |
 | B | X5, X4, X3 | Docs view: upload, replace, history, linked ids |
 | C | X2, X6 | Deliverable review pipeline and Green Canary upload queue |
 | D | X7, X8 | Generated per-credit spaces; subcontractor drops |
 | E | X9, X10 | Extraction for Canopy-owned credits; drawer and diffs |
+| F | X12, X13 | Moving between the official client and the embedding app; drives on a project folder |
